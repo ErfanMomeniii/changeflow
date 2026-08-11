@@ -164,7 +164,8 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			MaxBytes:      s.stream.Batch.MaxBytes.Bytes(),
 			FlushInterval: s.stream.Batch.FlushInterval.Duration(),
 		},
-		Logger: s.log,
+		ShutdownGrace: s.cfg.Runtime.ShutdownGrace.Duration(),
+		Logger:        s.log,
 	})
 	if err != nil {
 		return err

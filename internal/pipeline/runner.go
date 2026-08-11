@@ -30,8 +30,10 @@ type RunnerOptions struct {
 	Limits Limits
 
 	// Now is injected so tests control batching deadlines.
-	Now    func() time.Time
-	Logger *slog.Logger
+	Now func() time.Time
+	// ShutdownGrace bounds the final write attempt when the context is cancelled.
+	ShutdownGrace time.Duration
+	Logger        *slog.Logger
 }
 
 // Runner drives one stream: it transforms events, batches the documents, writes
@@ -41,14 +43,15 @@ type RunnerOptions struct {
 // has accepted the documents would mean a crash in between loses them, with
 // nothing left to indicate anything is missing.
 type Runner struct {
-	stream  string
-	plan    *Plan
-	sink    sink.Sink
-	dlq     DeadLetterQueue
-	store   checkpoint.Store
-	batcher *Batcher
-	now     func() time.Time
-	log     *slog.Logger
+	stream        string
+	plan          *Plan
+	sink          sink.Sink
+	dlq           DeadLetterQueue
+	store         checkpoint.Store
+	batcher       *Batcher
+	now           func() time.Time
+	shutdownGrace time.Duration
+	log           *slog.Logger
 
 	// pendingGTID is the position the current batch reaches once acknowledged.
 	pendingGTID string
@@ -84,15 +87,21 @@ func NewRunner(opts RunnerOptions) (*Runner, error) {
 		log = slog.Default()
 	}
 
+	grace := opts.ShutdownGrace
+	if grace <= 0 {
+		grace = 30 * time.Second
+	}
+
 	return &Runner{
-		stream:  opts.Stream,
-		plan:    opts.Plan,
-		sink:    opts.Sink,
-		dlq:     opts.DLQ,
-		store:   opts.Store,
-		batcher: batcher,
-		now:     now,
-		log:     log,
+		stream:        opts.Stream,
+		plan:          opts.Plan,
+		sink:          opts.Sink,
+		dlq:           opts.DLQ,
+		store:         opts.Store,
+		batcher:       batcher,
+		now:           now,
+		shutdownGrace: grace,
+		log:           log,
 	}, nil
 }
 
@@ -122,6 +131,10 @@ func (r *Runner) Run(ctx context.Context, events <-chan cdc.ChangeEvent) error {
 		select {
 		case <-ctx.Done():
 			stopTimer(timer)
+			// A graceful stop writes what is already in hand. Abandoning it would not
+			// lose data, since the position has not advanced and a restart replays it,
+			// but it turns every shutdown into avoidable duplicate work.
+			r.drain()
 			return ctx.Err()
 
 		case <-tick:
@@ -177,6 +190,28 @@ func (r *Runner) handle(ctx context.Context, ev cdc.ChangeEvent) error {
 		}
 	}
 	return nil
+}
+
+// drain makes a final, bounded attempt to write pending documents during shutdown.
+//
+// It runs on a context detached from the cancelled one, because the cancellation is
+// the reason it is running. Failure is logged rather than returned: the caller is
+// already shutting down, and the position simply stays where it was.
+func (r *Runner) drain() {
+	if r.batcher.Len() == 0 {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), r.shutdownGrace)
+	defer cancel()
+
+	pending := r.batcher.Len()
+	if err := r.flush(ctx); err != nil {
+		r.log.Warn("could not write the final batch during shutdown; it will be replayed on the next start",
+			"stream", r.stream, "documents", pending, "error", err)
+		return
+	}
+	r.log.Info("wrote the final batch during shutdown", "stream", r.stream, "documents", pending)
 }
 
 // flush writes whatever is pending.

@@ -427,6 +427,39 @@ func TestRunnerStopsOnContextCancellation(t *testing.T) {
 	}
 }
 
+// A graceful stop must write what it is holding, so a shutdown does not hand the
+// next start a batch to redo.
+func TestPendingBatchIsWrittenOnCancellation(t *testing.T) {
+	h := newRunner(t, func(o *RunnerOptions) {
+		o.Limits = Limits{MaxRows: 1000, MaxBytes: 1 << 20, FlushInterval: time.Hour}
+		o.ShutdownGrace = 5 * time.Second
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	events := make(chan cdc.ChangeEvent)
+
+	done := make(chan error, 1)
+	go func() { done <- h.runner.Run(ctx, events) }()
+
+	events <- event(1, 1, "paid", "uuid:1")
+	// Let the runner take the event before cancelling.
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runner did not stop")
+	}
+
+	if got := len(h.sink.written()); got != 1 {
+		t.Fatalf("expected the pending document to be written during shutdown, wrote %d", got)
+	}
+	if cp := h.checkpoint(t); cp.GTIDSet != "uuid:1" {
+		t.Fatalf("checkpoint = %q, want the drained batch to be recorded", cp.GTIDSet)
+	}
+}
+
 func TestNewRunnerRejectsMissingDependencies(t *testing.T) {
 	base := func() RunnerOptions {
 		return RunnerOptions{
