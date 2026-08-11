@@ -192,6 +192,12 @@ func (e *env) deleteIndex() {
 
 func (e *env) writeConfig() string {
 	e.t.Helper()
+	return e.writeConfigWith(false)
+}
+
+// writeConfigWith produces a configuration with or without the initial table scan.
+func (e *env) writeConfigWith(snapshot bool) string {
+	e.t.Helper()
 
 	path := filepath.Join(e.t.TempDir(), "changeflow.yaml")
 	body := fmt.Sprintf(`
@@ -206,7 +212,8 @@ streams:
   %s:
     table: shop.orders
     snapshot:
-      enabled: false
+      enabled: %t
+      chunk_size: 20
     batch:
       max_rows: 50
       max_bytes: 1MiB
@@ -219,7 +226,7 @@ streams:
     mapping:
       key: [id]
       exclude: [internal_note]
-`, e.mysqlDSN, 7000+time.Now().UnixNano()%900, e.metaDSN, e.streamName(), e.esURL, e.index)
+`, e.mysqlDSN, 7000+time.Now().UnixNano()%900, e.metaDSN, e.streamName(), snapshot, e.esURL, e.index)
 
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		e.t.Fatalf("write config: %v", err)
@@ -231,6 +238,13 @@ streams:
 type process struct {
 	cmd *exec.Cmd
 	log *bytes.Buffer
+}
+
+// startWithSnapshot launches the binary with the initial table scan enabled.
+func (e *env) startWithSnapshot() *process {
+	e.t.Helper()
+	e.config = e.writeConfigWith(true)
+	return e.start()
 }
 
 // start launches the binary. The returned process must be stopped by the caller.
@@ -623,21 +637,80 @@ func TestRestartIsIdempotent(t *testing.T) {
 	}
 }
 
-// Rows written before the stream existed are not in the binlog at all, so a
-// binlog-only run must not claim to have them. This is the gap a snapshot fills.
-func TestPreexistingRowsAreNotStreamed(t *testing.T) {
+// Rows written before the stream existed produce no binlog events, so only a table
+// scan can deliver them. This is the whole reason the snapshot phase exists.
+func TestPreexistingRowsAreBackfilled(t *testing.T) {
 	e := setup(t)
 
-	e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (23000,7,'paid',1.00)")
-	time.Sleep(time.Second)
-
-	e.start()
-	e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (23001,7,'paid',1.00)")
-	e.waitForDocument("23001")
-
-	if _, found := e.document("23000"); found {
-		t.Error("a row written before the stream started appeared without a snapshot, which the position handling should make impossible")
+	// Written before anything is running, and never touched again, so nothing about
+	// them will ever appear in the binlog.
+	const firstID = 23000
+	for i := 0; i < 25; i++ {
+		e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (?,7,'paid',1.00)", firstID+i)
 	}
+
+	e.startWithSnapshot()
+
+	e.waitFor("the pre-existing rows to be backfilled", func() bool {
+		return e.countInRange(firstID, firstID+24) == 25
+	})
+
+	// A change made after the scan must still be applied on top of it.
+	e.exec("UPDATE orders SET status='shipped' WHERE id=?", firstID)
+	e.waitFor("a later change to be applied over the scanned row", func() bool {
+		doc, found := e.document(fmt.Sprint(firstID))
+		return found && doc["status"] == "shipped"
+	})
+}
+
+// A scan interrupted partway must resume rather than restart, and must still deliver
+// every row.
+func TestInterruptedBackfillResumes(t *testing.T) {
+	e := setup(t)
+
+	const firstID = 23500
+	for i := 0; i < 120; i++ {
+		e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (?,7,'paid',1.00)", firstID+i)
+	}
+
+	p := e.startWithSnapshot()
+	// Kill once some rows have landed but before the scan can have finished.
+	e.waitFor("the scan to start delivering rows", func() bool {
+		return e.countInRange(firstID, firstID+119) > 0
+	})
+	p.kill()
+	killedAt := e.countInRange(firstID, firstID+119)
+	t.Logf("killed with %d of 120 rows backfilled", killedAt)
+
+	e.startWithSnapshot()
+	e.waitFor("the backfill to complete after a restart", func() bool {
+		return e.countInRange(firstID, firstID+119) == 120
+	})
+}
+
+// A change made while the scan is running must win over the scanned copy of the same
+// row, which is what makes scanning without a table lock safe.
+func TestConcurrentChangeWinsOverTheScannedRow(t *testing.T) {
+	e := setup(t)
+
+	const firstID = 24500
+	for i := 0; i < 200; i++ {
+		e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (?,7,'draft',1.00)", firstID+i)
+	}
+
+	e.startWithSnapshot()
+
+	// Change a row while the scan is in progress. Whichever order the two reach the
+	// destination, the change must be the version that survives.
+	e.exec("UPDATE orders SET status='cancelled' WHERE id=?", firstID+150)
+
+	e.waitFor("the whole table to be backfilled", func() bool {
+		return e.countInRange(firstID, firstID+199) == 200
+	})
+	e.waitFor("the concurrent change to be the surviving version", func() bool {
+		doc, found := e.document(fmt.Sprint(firstID + 150))
+		return found && doc["status"] == "cancelled"
+	})
 }
 
 func TestStatusReportsProgress(t *testing.T) {

@@ -154,9 +154,17 @@ jobs:
         if: ${{ !cancelled() }}
         run: go test ./test/e2e/ -count=1 -v -timeout 5m -run TestRestartIsIdempotent
 
-      - name: "e2e: pre-existing rows are not streamed"
+      - name: "e2e: pre-existing rows are backfilled"
         if: ${{ !cancelled() }}
-        run: go test ./test/e2e/ -count=1 -v -timeout 5m -run TestPreexistingRowsAreNotStreamed
+        run: go test ./test/e2e/ -count=1 -v -timeout 8m -run TestPreexistingRowsAreBackfilled
+
+      - name: "e2e: interrupted backfill resumes"
+        if: ${{ !cancelled() }}
+        run: go test ./test/e2e/ -count=1 -v -timeout 8m -run TestInterruptedBackfillResumes
+
+      - name: "e2e: a concurrent change wins over the scanned row"
+        if: ${{ !cancelled() }}
+        run: go test ./test/e2e/ -count=1 -v -timeout 8m -run TestConcurrentChangeWinsOverTheScannedRow
 
       - name: "e2e: status reports progress"
         if: ${{ !cancelled() }}
