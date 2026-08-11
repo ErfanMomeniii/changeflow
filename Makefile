@@ -2,7 +2,7 @@ DEV_DSN ?= cdc:cdc@tcp(127.0.0.1:13306)/
 DEV_META_DSN ?= cdc:cdc@tcp(127.0.0.1:13306)/changeflow_meta?parseTime=true
 COMPOSE := docker compose -f deploy/dev/docker-compose.yml
 
-.PHONY: help build test test-integration vet check check-all dev-up dev-sinks dev-down dev-logs dev-mysql dev-es dev-ch preflight tail
+.PHONY: help build test test-integration test-e2e vet check check-all dev-up dev-sinks dev-down dev-logs dev-mysql dev-es dev-ch preflight tail
 
 help:
 	@grep -E '^[a-z-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -15,6 +15,13 @@ test: ## Run unit tests
 
 test-integration: ## Run tests that need the dev containers running
 	CHANGEFLOW_TEST_DSN="$(DEV_META_DSN)" go test ./... -count=1
+
+test-e2e: ## Run end-to-end tests against MySQL and Elasticsearch (needs make dev-sinks)
+	CHANGEFLOW_E2E=1 \
+	CHANGEFLOW_E2E_MYSQL_DSN="root:root@tcp(127.0.0.1:13306)/shop" \
+	CHANGEFLOW_E2E_META_DSN="root:root@tcp(127.0.0.1:13306)/changeflow_meta" \
+	CHANGEFLOW_E2E_ES_URL="http://127.0.0.1:19200" \
+	go test ./test/e2e/ -count=1 -v -p 1 -timeout 20m
 
 vet: ## Static checks
 	go vet ./...
