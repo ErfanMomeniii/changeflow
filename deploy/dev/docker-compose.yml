@@ -1,0 +1,32 @@
+# Local MySQL configured for change data capture.
+#
+# Every flag below maps to a required preflight check. Notably
+# binlog-row-metadata defaults to MINIMAL even on MySQL 8, which is why it is set
+# explicitly: without FULL, unsigned columns arrive negative and ENUMs arrive as
+# integers.
+services:
+  mysql:
+    image: ${MYSQL_IMAGE:-mysql:8}
+    container_name: changeflow-mysql
+    command:
+      - --server-id=1
+      - --log-bin=binlog
+      - --binlog-format=ROW
+      - --binlog-row-image=FULL
+      - --binlog-row-metadata=FULL
+      - --gtid-mode=ON
+      - --enforce-gtid-consistency=ON
+      - --binlog-expire-logs-seconds=604800
+      - --log-replica-updates=ON
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: shop
+    ports:
+      - "13306:3306"
+    volumes:
+      - ./seed.sql:/docker-entrypoint-initdb.d/00-seed.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
