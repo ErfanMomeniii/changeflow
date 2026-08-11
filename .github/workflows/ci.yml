@@ -101,13 +101,19 @@ jobs:
           sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet
           df -h /
 
-      - name: start mysql and sinks
-        run: docker compose -f deploy/dev/docker-compose.yml --profile sinks up -d --wait
+      - name: raise vm.max_map_count for Elasticsearch
+        run: |
+          sudo sysctl -w vm.max_map_count=262144
+          sysctl vm.max_map_count
+
+      - name: start mysql and elasticsearch
+        run: docker compose -f deploy/dev/docker-compose.yml --profile sinks up -d --wait mysql elasticsearch
 
       - name: report service health
         run: |
           docker compose -f deploy/dev/docker-compose.yml ps
           curl -sf http://127.0.0.1:19200/_cluster/health | tee /dev/stderr
+          curl -sf http://127.0.0.1:19200 | tee /dev/stderr
 
       - name: run end-to-end tests
         env:
@@ -122,8 +128,12 @@ jobs:
       - name: service logs on failure
         if: failure()
         run: |
+          echo "::group::mysql"
           docker compose -f deploy/dev/docker-compose.yml logs --tail 200 mysql
-          docker compose -f deploy/dev/docker-compose.yml logs --tail 200 elasticsearch
+          echo "::endgroup::"
+          echo "::group::elasticsearch"
+          docker compose -f deploy/dev/docker-compose.yml logs --tail 300 elasticsearch
+          echo "::endgroup::"
 
       - name: stop services
         if: always()

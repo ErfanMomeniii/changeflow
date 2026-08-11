@@ -40,7 +40,10 @@ const (
 )
 
 type env struct {
-	t        *testing.T
+	t *testing.T
+	// running is the process under test, so a failed assertion can report what it
+	// was doing rather than only that nothing happened.
+	running  *process
 	db       *sql.DB
 	esURL    string
 	index    string
@@ -245,6 +248,7 @@ func (e *env) start() *process {
 		e.t.Fatalf("start changeflow: %v", err)
 	}
 	p := &process{cmd: cmd, log: log}
+	e.running = p
 	e.t.Cleanup(func() { p.stop() })
 
 	// Wait for replication to be registered, otherwise the test's writes would
@@ -358,7 +362,20 @@ func (e *env) waitFor(what string, condition func() bool) {
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	e.t.Fatalf("timed out waiting for %s", what)
+	e.t.Fatalf("timed out waiting for %s\nchangeflow log:\n%s", what, e.processLog())
+}
+
+// processLog returns the tail of the running process's output.
+func (e *env) processLog() string {
+	if e.running == nil {
+		return "(no process was started)"
+	}
+	out := e.running.log.String()
+	const tail = 4000
+	if len(out) > tail {
+		return "..." + out[len(out)-tail:]
+	}
+	return out
 }
 
 func (e *env) refresh() {

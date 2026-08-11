@@ -51,7 +51,10 @@ services:
       test: ["CMD-SHELL", "curl -fs http://localhost:9200/_cluster/health || exit 1"]
       interval: 5s
       timeout: 5s
-      retries: 30
+      retries: 40
+      # A cold JVM start takes a while, and failing checks during it are expected
+      # rather than meaningful.
+      start_period: 30s
 
   clickhouse:
     image: ${CH_IMAGE:-clickhouse/clickhouse-server:24.8-alpine}
