@@ -41,8 +41,9 @@ const maxStreamNameLen = 48
 // backed-up database rather than on local disk is what makes a changeflow process
 // stateless and freely rescheduled.
 type MySQLStore struct {
-	db    *sql.DB
-	table string
+	db          *sql.DB
+	table       string
+	LockTimeout time.Duration
 }
 
 // NewMySQLStore returns a store writing to the named table. The table name is
@@ -55,7 +56,7 @@ func NewMySQLStore(db *sql.DB, table string) (*MySQLStore, error) {
 	if err := validateIdentifier(table); err != nil {
 		return nil, err
 	}
-	return &MySQLStore{db: db, table: table}, nil
+	return &MySQLStore{db: db, table: table, LockTimeout: 10 * time.Second}, nil
 }
 
 // validateIdentifier permits only a plain or qualified identifier, so nothing a
@@ -255,9 +256,13 @@ func (s *MySQLStore) Lock(ctx context.Context, stream string) (*StreamLock, erro
 	}
 
 	name := "changeflow:" + stream
+	waitSeconds := int(s.LockTimeout.Round(time.Second) / time.Second)
+	if waitSeconds < 0 {
+		waitSeconds = 0
+	}
+
 	var got sql.NullInt64
-	// Timeout 0 means fail immediately rather than queue behind the other holder.
-	if err := conn.QueryRowContext(ctx, "SELECT GET_LOCK(?, 0)", name).Scan(&got); err != nil {
+	if err := conn.QueryRowContext(ctx, "SELECT GET_LOCK(?, ?)", name, waitSeconds).Scan(&got); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("checkpoint: acquire lock for %s: %w", stream, err)
 	}
@@ -268,7 +273,7 @@ func (s *MySQLStore) Lock(ctx context.Context, stream string) (*StreamLock, erro
 			holder = fmt.Sprintf("connection id %d", id.Int64)
 		}
 		conn.Close()
-		return nil, fmt.Errorf("%w: %s holds %s", ErrStreamLocked, holder, stream)
+		return nil, fmt.Errorf("%w: %s still holds %s after waiting %s", ErrStreamLocked, holder, stream, s.LockTimeout)
 	}
 
 	return &StreamLock{conn: conn, name: name, stream: stream}, nil

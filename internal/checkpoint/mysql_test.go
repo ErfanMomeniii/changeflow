@@ -1,10 +1,12 @@
 package checkpoint
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"os"
 	"testing"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 )
@@ -39,6 +41,8 @@ func testStore(t *testing.T) (*MySQLStore, *sql.DB) {
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
+	// Contention is the behaviour under test, so do not wait for it to clear.
+	store.LockTimeout = 0
 	if err := store.EnsureSchema(t.Context()); err != nil {
 		t.Fatalf("ensure schema: %v", err)
 	}
@@ -204,6 +208,36 @@ func TestMySQLStoreRejectsOversizedStreamName(t *testing.T) {
 
 	if err := store.Save(t.Context(), Checkpoint{Stream: long}); err == nil {
 		t.Fatal("expected a name longer than the column to be rejected before reaching MySQL")
+	}
+}
+
+// A restart moments after an abrupt kill must be able to take the lock once the
+// server reaps the dead session, rather than refusing to start.
+func TestStreamLockWaitsBrieflyForAContendedLock(t *testing.T) {
+	store, _ := testStore(t)
+	store.LockTimeout = 2 * time.Second
+	ctx := t.Context()
+
+	held, err := store.Lock(ctx, "orders_to_es")
+	if err != nil {
+		t.Fatalf("first lock: %v", err)
+	}
+
+	// Release from another goroutine while the second acquire is waiting.
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		_ = held.Release(context.Background())
+	}()
+
+	start := time.Now()
+	second, err := store.Lock(ctx, "orders_to_es")
+	if err != nil {
+		t.Fatalf("expected the wait to outlast the holder: %v", err)
+	}
+	defer second.Release(ctx)
+
+	if elapsed := time.Since(start); elapsed < 200*time.Millisecond {
+		t.Errorf("acquired in %v, which suggests it did not actually wait", elapsed)
 	}
 }
 
