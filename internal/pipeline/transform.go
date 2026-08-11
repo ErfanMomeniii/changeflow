@@ -219,7 +219,7 @@ func (p *Plan) Apply(ev *cdc.ChangeEvent) ([]cdc.Doc, error) {
 		if oldKey != newKey {
 			return []cdc.Doc{
 				{Key: oldKey, Version: ev.Seq, Deleted: true},
-				{Key: newKey, Version: ev.Seq + 1, Body: body},
+				{Key: newKey, Version: ev.Seq, Body: body},
 			}, nil
 		}
 	}

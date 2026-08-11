@@ -383,9 +383,12 @@ func TestKeyChangingUpdateProducesDeleteThenUpsert(t *testing.T) {
 	if docs[1].Deleted || docs[1].Key != "43" {
 		t.Errorf("second document should write the new key, got key=%q deleted=%v", docs[1].Key, docs[1].Deleted)
 	}
-	// Consecutive versions fix their order relative to each other.
-	if docs[1].Version <= docs[0].Version {
-		t.Errorf("versions must increase: delete=%d upsert=%d", docs[0].Version, docs[1].Version)
+	// Both carry the event's version. They address different keys, so no ordering
+	// between them is needed, and giving the second Seq+1 would risk colliding
+	// with the version of the next event for that same new key, which the
+	// destination would then reject as not newer.
+	if docs[0].Version != 5000 || docs[1].Version != 5000 {
+		t.Errorf("both documents should carry the event version: delete=%d upsert=%d", docs[0].Version, docs[1].Version)
 	}
 }
 

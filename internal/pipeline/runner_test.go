@@ -352,6 +352,9 @@ func TestKeyChangeProducesBothDocumentsInOrder(t *testing.T) {
 	if written[1].Deleted || written[1].Key != "2" {
 		t.Errorf("second document should write the new key, got %+v", written[1])
 	}
+	if written[1].Version != 10 {
+		t.Errorf("version = %d, want the event version 10", written[1].Version)
+	}
 }
 
 // An event that cannot be transformed at all would otherwise stop the stream, so it
