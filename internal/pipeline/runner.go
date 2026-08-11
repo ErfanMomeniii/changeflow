@@ -107,7 +107,15 @@ func (r *Runner) Run(ctx context.Context, events <-chan cdc.ChangeEvent) error {
 		var timer *time.Timer
 		var tick <-chan time.Time
 		if deadline, ok := r.batcher.NextDeadline(); ok {
-			timer = time.NewTimer(time.Until(deadline))
+			// Measured against the same clock the batcher used to set the deadline.
+			// Mixing an injected clock here with the real one produces a delay that
+			// can already be negative, firing the timer at once and splitting a batch
+			// that was nowhere near due.
+			delay := deadline.Sub(r.now())
+			if delay < 0 {
+				delay = 0
+			}
+			timer = time.NewTimer(delay)
 			tick = timer.C
 		}
 
