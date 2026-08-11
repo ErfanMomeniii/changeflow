@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/go-mysql-org/go-mysql/mysql"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/shopspring/decimal"
 
@@ -302,6 +304,115 @@ func TestStreamerReloadsDefinitionAfterAlter(t *testing.T) {
 	}
 	if _, ok := second.Meta.Column("temp_note"); !ok {
 		t.Error("the new column is missing from the reloaded definition")
+	}
+}
+
+// A position must be the cumulative set of executed transactions, not the last
+// transaction's identifier.
+//
+// Resuming from a single identifier tells the server we have executed only that
+// transaction, so it replays everything else it retains. That resurrects rows whose
+// deletes have since been purged, and re-does the entire binlog on every restart.
+func TestEventsCarryTheCumulativeExecutedSet(t *testing.T) {
+	h := newLiveHarness(t, "shop.orders")
+
+	t.Cleanup(func() { h.writer.Exec("DELETE FROM orders WHERE id BETWEEN 9600 AND 9700") })
+	h.exec(t, "INSERT INTO orders (id,user_id,status,total_amount) VALUES (9600,5,'paid',1.00)")
+	h.exec(t, "INSERT INTO orders (id,user_id,status,total_amount) VALUES (9601,5,'paid',1.00)")
+
+	first := h.next(t)
+	second := h.next(t)
+
+	// A set spans a range of transactions and reads as "uuid:1-N", while a single
+	// identifier reads as "uuid:N".
+	if !strings.Contains(first.GTID, "-") {
+		t.Errorf("position %q looks like one transaction rather than a cumulative set", first.GTID)
+	}
+
+	// The second event's position must include the first event's transaction, since
+	// that transaction has committed by then.
+	firstSet, err := mysql.ParseMysqlGTIDSet(first.GTID)
+	if err != nil {
+		t.Fatalf("parse %q: %v", first.GTID, err)
+	}
+	secondSet, err := mysql.ParseMysqlGTIDSet(second.GTID)
+	if err != nil {
+		t.Fatalf("parse %q: %v", second.GTID, err)
+	}
+	if !secondSet.Contain(firstSet) {
+		t.Errorf("position went backwards: %q does not contain %q", second.GTID, first.GTID)
+	}
+	if secondSet.Equal(firstSet) {
+		t.Errorf("position did not advance after a committed transaction: still %q", second.GTID)
+	}
+}
+
+// Resuming from a reported position must not re-deliver rows from transactions
+// already folded into it.
+//
+// The transaction an event belongs to is deliberately excluded from its position,
+// since it may be only partly written, so that one transaction does replay. Earlier
+// ones must not: before the position became a cumulative set, resuming replayed the
+// entire retained binlog.
+func TestResumingFromAPositionDoesNotReplayEarlierTransactions(t *testing.T) {
+	h := newLiveHarness(t, "shop.orders")
+
+	t.Cleanup(func() { h.writer.Exec("DELETE FROM orders WHERE id BETWEEN 9700 AND 9800") })
+	h.exec(t, "INSERT INTO orders (id,user_id,status,total_amount) VALUES (9700,5,'paid',1.00)")
+	h.exec(t, "INSERT INTO orders (id,user_id,status,total_amount) VALUES (9701,5,'paid',1.00)")
+
+	h.next(t) // 9700
+	second := h.next(t)
+	resumeFrom := second.GTID
+	h.stream.Close()
+
+	resumed, err := New(Options{
+		Host: "127.0.0.1", Port: 13306, User: "cdc", Password: "cdc",
+		ServerID:  4100 + nextServerID.Add(1),
+		StartGTID: resumeFrom,
+		Tables:    []string{"shop.orders"},
+		Schemas:   schema.NewStore(schema.DBLoader{DB: h.db}),
+		Sequencer: &counterSeq{},
+	})
+	if err != nil {
+		t.Fatalf("new streamer: %v", err)
+	}
+	defer resumed.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	events := resumed.Events(ctx)
+
+	// Collect whatever arrives before the deadline.
+	var replayed []uint64
+	deadline := time.After(3 * time.Second)
+collect:
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				break collect
+			}
+			if id, isUint := ev.Values()[0].(uint64); isUint {
+				replayed = append(replayed, id)
+			}
+		case <-deadline:
+			break collect
+		}
+	}
+
+	for _, id := range replayed {
+		if id == 9700 {
+			t.Fatalf("resuming from %q replayed row 9700, whose transaction the position already covers (replayed: %v)",
+				resumeFrom, replayed)
+		}
+	}
+	// The seed rows are the canary: they were written long before this position, so
+	// seeing them means the whole binlog is being re-read.
+	for _, id := range replayed {
+		if id == 1 || id == 2 {
+			t.Fatalf("resuming replayed seed row %d, so the position is not being honoured (replayed: %v)", id, replayed)
+		}
 	}
 }
 

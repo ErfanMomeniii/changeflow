@@ -47,13 +47,14 @@ type Options struct {
 
 // Streamer reads the replication stream.
 type Streamer struct {
-	opts    Options
-	watched map[string]bool
-	log     *slog.Logger
-	syncer  *replication.BinlogSyncer
-	mu      sync.Mutex
-	err     error
-	gtid    string
+	opts      Options
+	watched   map[string]bool
+	log       *slog.Logger
+	syncer    *replication.BinlogSyncer
+	mu        sync.Mutex
+	err       error
+	executed  mysql.GTIDSet
+	currentTx string
 }
 
 // New validates options and prepares a reader. Nothing connects until Events is
@@ -130,11 +131,14 @@ func (s *Streamer) setErr(err error) {
 	}
 }
 
-// Position returns the last transaction identifier seen, for reporting.
+// Position returns the cumulative set of applied transactions, for reporting.
 func (s *Streamer) Position() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.gtid
+	if s.executed == nil {
+		return ""
+	}
+	return s.executed.String()
 }
 
 func (s *Streamer) run(ctx context.Context, out chan<- cdc.ChangeEvent) error {
@@ -159,6 +163,10 @@ func (s *Streamer) run(ctx context.Context, out chan<- cdc.ChangeEvent) error {
 		return fmt.Errorf("binlog: parse start position %q: %w", s.opts.StartGTID, err)
 	}
 
+	s.mu.Lock()
+	s.executed = gtidSet.Clone()
+	s.mu.Unlock()
+
 	streamer, err := s.syncer.StartSyncGTID(gtidSet)
 	if err != nil {
 		return fmt.Errorf("binlog: start replication from %s: %w", s.opts.StartGTID, err)
@@ -179,11 +187,27 @@ func (s *Streamer) run(ctx context.Context, out chan<- cdc.ChangeEvent) error {
 func (s *Streamer) handle(ctx context.Context, ev *replication.BinlogEvent, out chan<- cdc.ChangeEvent) error {
 	switch e := ev.Event.(type) {
 	case *replication.GTIDEvent:
-		if set, err := e.GTIDNext(); err == nil {
-			s.mu.Lock()
-			s.gtid = set.String()
-			s.mu.Unlock()
+		set, err := e.GTIDNext()
+		if err != nil {
+			return fmt.Errorf("binlog: read transaction identifier: %w", err)
 		}
+		s.mu.Lock()
+		s.currentTx = set.String()
+		s.mu.Unlock()
+		return nil
+
+	case *replication.XIDEvent:
+		// The transaction is complete, so it can join the executed set and be part of
+		// the position reported for subsequent events.
+		s.mu.Lock()
+		if s.currentTx != "" && s.executed != nil {
+			if err := s.executed.Update(s.currentTx); err != nil {
+				s.mu.Unlock()
+				return fmt.Errorf("binlog: fold transaction %s into the position: %w", s.currentTx, err)
+			}
+			s.currentTx = ""
+		}
+		s.mu.Unlock()
 		return nil
 
 	case *replication.QueryEvent:
@@ -257,8 +281,15 @@ func (s *Streamer) emitRows(ctx context.Context, raw *replication.BinlogEvent, e
 		return nil
 	}
 
+	// The position attached to these rows excludes the transaction they belong to,
+	// because it is not finished yet. A restart therefore replays this transaction
+	// in full, which the destination absorbs, rather than skipping the part of it
+	// that had not been written.
 	s.mu.Lock()
-	gtid := s.gtid
+	gtid := ""
+	if s.executed != nil {
+		gtid = s.executed.String()
+	}
 	s.mu.Unlock()
 
 	if isUpdate {
