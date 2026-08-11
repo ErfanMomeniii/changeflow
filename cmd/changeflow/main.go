@@ -1,8 +1,8 @@
 // Command changeflow replicates MySQL changes into downstream stores.
 //
-// It currently offers two diagnostics: "preflight", which reports whether a
-// server is configured for change data capture, and "tail", which prints decoded
-// row changes as they happen.
+// Subcommands: "run" replicates a configured stream, "status" reports each
+// stream's position and lag, "validate" checks a configuration file, and
+// "preflight" and "tail" are diagnostics against a source server.
 package main
 
 import (
@@ -11,9 +11,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -21,7 +23,10 @@ import (
 
 	driver "github.com/go-sql-driver/mysql"
 
+	"github.com/ErfanMomeniii/changeflow/internal/checkpoint"
+	"github.com/ErfanMomeniii/changeflow/internal/config"
 	"github.com/ErfanMomeniii/changeflow/internal/preflight"
+	"github.com/ErfanMomeniii/changeflow/internal/supervisor"
 	"github.com/ErfanMomeniii/changeflow/internal/tail"
 )
 
@@ -36,6 +41,12 @@ func main() {
 
 	var err error
 	switch os.Args[1] {
+	case "run":
+		err = runStream(ctx, os.Args[2:])
+	case "status":
+		err = runStatus(ctx, os.Args[2:])
+	case "validate":
+		err = runValidate(os.Args[2:])
 	case "tail":
 		err = runTail(ctx, os.Args[2:])
 	case "preflight":
@@ -59,6 +70,15 @@ func usage() {
 	fmt.Fprint(os.Stderr, `changeflow - MySQL change data capture
 
 Usage:
+  changeflow run -c <config.yaml> --stream <name>
+        Replicate one configured stream until interrupted.
+
+  changeflow status -c <config.yaml>
+        Report each stream's position, lag, and snapshot state.
+
+  changeflow validate -c <config.yaml>
+        Check a configuration file without connecting to anything.
+
   changeflow preflight --dsn <dsn>
         Check whether a MySQL server is configured for CDC.
 
@@ -70,6 +90,122 @@ DSN format:
   user:password@tcp(host:3306)/
 
 `)
+}
+
+func runValidate(args []string) error {
+	fs := flag.NewFlagSet("validate", flag.ExitOnError)
+	path := fs.String("c", "changeflow.yaml", "path to the configuration file")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	cfg, err := config.Load(*path)
+	if err != nil {
+		return err
+	}
+	// A configuration whose buffers and in-flight batches exceed the process memory
+	// limit is a scheduled crash, so it is better refused here.
+	if err := cfg.CheckMemoryLimit(debug.SetMemoryLimit(-1)); err != nil {
+		return err
+	}
+
+	fmt.Printf("configuration is valid: %d stream(s), about %s of buffers and in-flight batches\n",
+		len(cfg.Streams), config.ByteSize(cfg.EstimatedMemory()))
+	for _, name := range cfg.StreamNames() {
+		s := cfg.Streams[name]
+		fmt.Printf("  %-28s %s -> %s\n", name, s.Table, s.Sink.Type)
+	}
+	return nil
+}
+
+func runStream(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("run", flag.ExitOnError)
+	path := fs.String("c", "changeflow.yaml", "path to the configuration file")
+	stream := fs.String("stream", "", "which configured stream to run")
+	dlqDir := fs.String("dlq-dir", "dlq", "directory for records of documents a destination refused")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *stream == "" {
+		return errors.New("--stream is required; run one stream per process")
+	}
+
+	cfg, err := config.Load(*path)
+	if err != nil {
+		return err
+	}
+	if err := cfg.CheckMemoryLimit(debug.SetMemoryLimit(-1)); err != nil {
+		return err
+	}
+
+	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	sup, err := supervisor.New(cfg, *stream, *dlqDir, log)
+	if err != nil {
+		return err
+	}
+	return sup.Run(ctx)
+}
+
+func runStatus(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("status", flag.ExitOnError)
+	path := fs.String("c", "changeflow.yaml", "path to the configuration file")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	cfg, err := config.Load(*path)
+	if err != nil {
+		return err
+	}
+
+	// Status reads the checkpoint table rather than asking a running process, so it
+	// works when a stream is down, which is when it is needed most.
+	db, err := open(ctx, cfg.Checkpoint.DSN)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	store, err := checkpoint.NewMySQLStore(db, cfg.Checkpoint.Table)
+	if err != nil {
+		return err
+	}
+
+	now := time.Now()
+	fmt.Printf("%-28s %-10s %-12s %s\n", "STREAM", "LAG", "SNAPSHOT", "POSITION")
+
+	// Before any stream has run the table does not exist yet, which is worth
+	// reporting plainly rather than as a failure.
+	if _, err := store.Load(ctx, cfg.StreamNames()[0]); errors.Is(err, checkpoint.ErrNotInitialized) {
+		for _, name := range cfg.StreamNames() {
+			fmt.Printf("%-28s %-10s %-12s %s\n", name, "-", "not started", "-")
+		}
+		return nil
+	}
+	for _, name := range cfg.StreamNames() {
+		cp, err := store.Load(ctx, name)
+		if errors.Is(err, checkpoint.ErrNotFound) {
+			fmt.Printf("%-28s %-10s %-12s %s\n", name, "-", "not started", "-")
+			continue
+		}
+		if err != nil {
+			return err
+		}
+
+		lag := "-"
+		if d, ok := cp.LagAt(now); ok {
+			lag = d.Round(time.Millisecond).String()
+		}
+		snapshot := "pending"
+		if cp.SnapshotDone {
+			snapshot = "done"
+		} else if cp.SnapshotRowsTotal > 0 {
+			snapshot = fmt.Sprintf("%d%%", 100*cp.SnapshotRowsDone/cp.SnapshotRowsTotal)
+		}
+		fmt.Printf("%-28s %-10s %-12s %s\n", name, lag, snapshot, cp.GTIDSet)
+	}
+	return nil
 }
 
 type commonFlags struct {
