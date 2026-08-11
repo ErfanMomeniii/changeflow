@@ -5,7 +5,7 @@ DEV_SHOP_DSN ?= cdc:cdc@tcp(127.0.0.1:13306)/shop?parseTime=true
 DEV_WRITE_DSN ?= root:root@tcp(127.0.0.1:13306)/shop?parseTime=true
 COMPOSE := docker compose -f deploy/dev/docker-compose.yml
 
-.PHONY: help build test test-integration test-e2e vet check check-all dev-up dev-sinks dev-down dev-logs dev-mysql dev-es dev-ch preflight tail
+.PHONY: help build test test-integration test-e2e bench budgets vet check check-all dev-up dev-sinks dev-down dev-logs dev-mysql dev-es dev-ch preflight tail
 
 help:
 	@grep -E '^[a-z-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -29,10 +29,16 @@ test-e2e: ## Run end-to-end tests against MySQL and Elasticsearch (needs make de
 	CHANGEFLOW_E2E_ES_URL="http://127.0.0.1:19200" \
 	go test ./test/e2e/ -count=1 -v -p 1 -timeout 20m
 
+bench: ## Run benchmarks
+	go test ./... -run XXX -bench . -benchmem
+
+budgets: ## Assert the performance budgets the design commits to
+	go test ./internal/pipeline/ ./internal/sink/elasticsearch/ -count=1 -run 'Budget|Cheap' -v
+
 vet: ## Static checks
 	go vet ./...
 
-check: vet test ## Fast checks, no containers needed
+check: vet test budgets ## Fast checks, no containers needed
 
 check-all: vet test-integration ## Everything, including tests against live services
 

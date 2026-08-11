@@ -45,6 +45,17 @@ jobs:
       - name: test
         run: go test ./... -count=1 -race
 
+      # Budgets are asserted as tests, so a regression fails the build rather than
+      # sitting in output nobody reads. Allocation counts are the gate: they are a
+      # property of the code, while nanoseconds on a shared runner are not comparable
+      # between machines.
+      - name: performance budgets
+        run: go test ./internal/pipeline/ ./internal/sink/elasticsearch/ -count=1 -run 'Budget|Cheap' -v
+
+      # Recorded for whoever reads the run, not compared automatically.
+      - name: benchmarks
+        run: go test ./... -run XXX -bench . -benchmem -benchtime 200ms | grep -E '^(Benchmark|goos|goarch|pkg)' || true
+
   # Tests that need a real MySQL: binlog decoding, information_schema reading, the
   # checkpoint store, and the advisory lock. These are the ones that keep finding
   # bugs a stub cannot.
