@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -424,6 +425,54 @@ func (e *env) countDocuments() int {
 	return result.Count
 }
 
+// documentIDs returns every document id in the index, for diagnosing a count that
+// does not match expectations.
+func (e *env) documentIDs() []string {
+	e.t.Helper()
+
+	e.refresh()
+	status, payload := e.esRequest(http.MethodGet, "/"+e.index+"/_search?size=200&_source=false&sort=_doc", "")
+	if status >= 300 {
+		e.t.Fatalf("search: status %d: %s", status, payload)
+	}
+
+	var result struct {
+		Hits struct {
+			Hits []struct {
+				ID string `json:"_id"`
+			} `json:"hits"`
+		} `json:"hits"`
+	}
+	if err := json.Unmarshal([]byte(payload), &result); err != nil {
+		e.t.Fatalf("decode search: %v", err)
+	}
+
+	ids := make([]string, 0, len(result.Hits.Hits))
+	for _, hit := range result.Hits.Hits {
+		ids = append(ids, hit.ID)
+	}
+	return ids
+}
+
+// countInRange counts documents whose identifier falls in a range, which is how a
+// test asserts on the rows it wrote rather than on whatever else the table holds.
+func (e *env) countInRange(from, to uint64) int {
+	e.t.Helper()
+
+	e.refresh()
+	query := fmt.Sprintf(`{"query":{"range":{"id":{"gte":%d,"lte":%d}}}}`, from, to)
+	status, payload := e.esRequest(http.MethodPost, "/"+e.index+"/_count", query)
+	if status >= 300 {
+		e.t.Fatalf("count in range: status %d: %s", status, payload)
+	}
+
+	var result struct{ Count int }
+	if err := json.Unmarshal([]byte(payload), &result); err != nil {
+		e.t.Fatalf("decode count: %v", err)
+	}
+	return result.Count
+}
+
 func TestInsertReachesElasticsearch(t *testing.T) {
 	e := setup(t)
 	e.start()
@@ -531,25 +580,46 @@ func TestConvergesAfterAnAbruptKill(t *testing.T) {
 	}
 }
 
-// Restarting cleanly must not duplicate or lose anything either, and the replayed
-// batch must be recognised as already applied.
+// Restarting cleanly must not duplicate or lose anything, and the replayed batch
+// must be recognised as already applied rather than written again.
 func TestRestartIsIdempotent(t *testing.T) {
 	e := setup(t)
 	p := e.start()
 
-	for i := 0; i < 20; i++ {
-		e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (?,7,'paid',1.00)", 22000+i)
+	const (
+		firstID = 22000
+		rows    = 20
+	)
+	for i := 0; i < rows; i++ {
+		e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (?,7,'paid',1.00)", firstID+i)
 	}
-	e.waitFor("all documents to arrive", func() bool { return e.countDocuments() == 20 })
+	e.waitFor("the rows to arrive", func() bool {
+		return e.countInRange(firstID, firstID+rows-1) == rows
+	})
 
 	p.stop()
 	e.start()
 
-	// Give the restarted process time to replay whatever it re-reads.
+	// Long enough for the restarted process to replay whatever it re-reads.
 	time.Sleep(3 * time.Second)
 
-	if got := e.countDocuments(); got != 20 {
-		t.Fatalf("document count = %d after a restart, want 20", got)
+	// The rows this test wrote are what it is entitled to assert on: one document
+	// per key, no more and no fewer.
+	if got := e.countInRange(firstID, firstID+rows-1); got != rows {
+		t.Errorf("documents in the written range = %d, want %d", got, rows)
+	}
+
+	// Anything else in the index did not come from this test, and naming it is more
+	// useful than reporting a total that does not add up.
+	if ids := e.documentIDs(); len(ids) != rows {
+		var strays []string
+		for _, id := range ids {
+			if n, err := strconv.ParseUint(id, 10, 64); err != nil || n < firstID || n > firstID+rows-1 {
+				strays = append(strays, id)
+			}
+		}
+		t.Errorf("index holds %d documents, want %d; documents outside the written range: %v",
+			len(ids), rows, strays)
 	}
 }
 
