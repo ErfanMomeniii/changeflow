@@ -134,7 +134,10 @@ func BenchmarkBatcherAdd(b *testing.B) {
 // a few percent.
 func TestTransformStaysWithinItsAllocationBudget(t *testing.T) {
 	if testing.Short() {
-		t.Skip("benchmark budgets are not measured in short mode")
+		t.Skip("performance budgets are not measured in short mode")
+	}
+	if raceDetectorEnabled {
+		t.Skip("performance budgets are not measured under the race detector, which multiplies both time and allocation counts")
 	}
 
 	// The time bound comes from the design's target of 150k documents per second per

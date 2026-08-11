@@ -45,7 +45,10 @@ func BenchmarkEncodeBulk(b *testing.B) {
 // or batching stops paying for itself.
 func TestBulkEncodingStaysCheap(t *testing.T) {
 	if testing.Short() {
-		t.Skip("benchmark budgets are not measured in short mode")
+		t.Skip("performance budgets are not measured in short mode")
+	}
+	if raceDetectorEnabled {
+		t.Skip("performance budgets are not measured under the race detector, which multiplies both time and allocation counts")
 	}
 
 	result := testing.Benchmark(BenchmarkEncodeBulk)

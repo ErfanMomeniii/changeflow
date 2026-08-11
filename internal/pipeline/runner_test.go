@@ -3,6 +3,8 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -135,6 +137,9 @@ func newRunner(t *testing.T, tune func(*RunnerOptions)) *runnerHarness {
 	}
 
 	opts := RunnerOptions{
+		// These tests provoke refusals and shutdowns on purpose, so their logs are
+		// noise rather than signal.
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Stream: "orders_to_es",
 		Plan:   runnerPlan(t),
 		Sink:   h.sink,
