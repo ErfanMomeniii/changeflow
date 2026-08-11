@@ -85,7 +85,12 @@ jobs:
   e2e:
     name: end-to-end
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
+    env:
+      CHANGEFLOW_E2E: "1"
+      CHANGEFLOW_E2E_MYSQL_DSN: root:root@tcp(127.0.0.1:13306)/shop
+      CHANGEFLOW_E2E_META_DSN: root:root@tcp(127.0.0.1:13306)/changeflow_meta
+      CHANGEFLOW_E2E_ES_URL: http://127.0.0.1:19200
     steps:
       - uses: actions/checkout@v4
 
@@ -115,15 +120,40 @@ jobs:
           curl -sf http://127.0.0.1:19200/_cluster/health | tee /dev/stderr
           curl -sf http://127.0.0.1:19200 | tee /dev/stderr
 
-      - name: run end-to-end tests
-        env:
-          CHANGEFLOW_E2E: "1"
-          CHANGEFLOW_E2E_MYSQL_DSN: root:root@tcp(127.0.0.1:13306)/shop
-          CHANGEFLOW_E2E_META_DSN: root:root@tcp(127.0.0.1:13306)/changeflow_meta
-          CHANGEFLOW_E2E_ES_URL: http://127.0.0.1:19200
-        # Verbose, because when an end-to-end test fails the sequence of steps is the
-        # diagnosis. Serial, because the tests share one MySQL and kill processes.
-        run: go test ./test/e2e/ -count=1 -v -p 1 -timeout 20m
+      # One step per scenario. A failed step name identifies the scenario in the run
+      # summary, which is quicker to read than a log, and every step runs even after
+      # an earlier failure so one run reports every problem rather than the first.
+      - name: "e2e: insert reaches elasticsearch"
+        if: ${{ !cancelled() }}
+        run: go test ./test/e2e/ -count=1 -v -timeout 5m -run TestInsertReachesElasticsearch
+
+      - name: "e2e: update and delete propagate"
+        if: ${{ !cancelled() }}
+        run: go test ./test/e2e/ -count=1 -v -timeout 5m -run TestUpdateAndDeletePropagate
+
+      - name: "e2e: key change removes the old document"
+        if: ${{ !cancelled() }}
+        run: go test ./test/e2e/ -count=1 -v -timeout 5m -run TestKeyChangeRemovesTheOldDocument
+
+      - name: "e2e: converges after an abrupt kill"
+        if: ${{ !cancelled() }}
+        run: go test ./test/e2e/ -count=1 -v -timeout 8m -run TestConvergesAfterAnAbruptKill
+
+      - name: "e2e: restart is idempotent"
+        if: ${{ !cancelled() }}
+        run: go test ./test/e2e/ -count=1 -v -timeout 5m -run TestRestartIsIdempotent
+
+      - name: "e2e: pre-existing rows are not streamed"
+        if: ${{ !cancelled() }}
+        run: go test ./test/e2e/ -count=1 -v -timeout 5m -run TestPreexistingRowsAreNotStreamed
+
+      - name: "e2e: status reports progress"
+        if: ${{ !cancelled() }}
+        run: go test ./test/e2e/ -count=1 -v -timeout 5m -run TestStatusReportsProgress
+
+      - name: "e2e: refused document goes to the dead letter queue"
+        if: ${{ !cancelled() }}
+        run: go test ./test/e2e/ -count=1 -v -timeout 5m -run TestRefusedDocumentGoesToTheDeadLetterQueueAndStreamContinues
 
       - name: service logs on failure
         if: failure()

@@ -12,6 +12,7 @@ package e2e
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -79,7 +80,7 @@ func setup(t *testing.T) *env {
 		t.Fatalf("open mysql: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	if err := db.PingContext(t.Context()); err != nil {
+	if err := db.PingContext(context.Background()); err != nil {
 		t.Fatalf("connect to mysql: %v", err)
 	}
 	e.db = db
@@ -298,7 +299,11 @@ func (p *process) kill() {
 
 func (e *env) exec(query string, args ...any) {
 	e.t.Helper()
-	if _, err := e.db.ExecContext(e.t.Context(), query, args...); err != nil {
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if _, err := e.db.ExecContext(ctx, query, args...); err != nil {
 		e.t.Fatalf("exec %q: %v", query, err)
 	}
 }
@@ -310,7 +315,12 @@ func (e *env) esRequest(method, path, body string) (int, string) {
 	if body != "" {
 		reader = strings.NewReader(body)
 	}
-	req, err := http.NewRequestWithContext(e.t.Context(), method, e.esURL+path, reader)
+	// Deliberately not the test's context: cleanup runs after it is cancelled, and
+	// every teardown would otherwise fail the test it was tidying up after.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, method, e.esURL+path, reader)
 	if err != nil {
 		e.t.Fatalf("build request: %v", err)
 	}
@@ -343,7 +353,12 @@ func (e *env) document(id string) (map[string]any, bool) {
 		Found  bool           `json:"found"`
 		Source map[string]any `json:"_source"`
 	}
-	if err := json.Unmarshal([]byte(payload), &envelope); err != nil {
+	// UseNumber keeps large integers exact. Decoded as float64, an unsigned 64-bit
+	// identifier comes back as 1.8446744073709552e+19, which would make this test
+	// report a corruption that only happened in the test.
+	dec := json.NewDecoder(strings.NewReader(payload))
+	dec.UseNumber()
+	if err := dec.Decode(&envelope); err != nil {
 		e.t.Fatalf("decode document %s: %v", id, err)
 	}
 	return envelope.Source, envelope.Found
@@ -577,33 +592,80 @@ func TestStatusReportsProgress(t *testing.T) {
 
 // A document the index refuses permanently must be recorded and must not stop the
 // stream, or one bad row would block every later change.
+// A document the index refuses permanently must be recorded and must not stop the
+// stream, or one bad row would block every later change.
+//
+// The refusal has to be specific to one row rather than to a field, so the index
+// declares user_id as a byte: 7 fits, 99999 does not. A value MySQL itself would
+// reject teaches nothing, because changeflow would never see it.
 func TestRefusedDocumentGoesToTheDeadLetterQueueAndStreamContinues(t *testing.T) {
 	e := setup(t)
+	// Replace the standard mapping with one whose user_id cannot hold large values.
+	e.deleteIndex()
+	e.putNarrowIndex()
+
 	e.start()
 
-	// The mapping declares total_amount as a keyword and the index is strict, so a
-	// value that cannot be indexed is rejected per document. A note longer than the
-	// keyword limit does that without disturbing anything else.
-	e.exec("INSERT INTO orders (id,user_id,status,total_amount,note_latin1) VALUES (25000,7,'paid',1.00,?)",
-		strings.Repeat("x", 40000))
+	// Refused: 99999 does not fit a byte.
+	e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (25000,99999,'paid',1.00)")
+	// Accepted: the stream must carry on past the refusal.
 	e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (25001,7,'paid',1.00)")
 
-	// The healthy row that followed must still arrive.
 	e.waitForDocument("25001")
 
-	entries, err := os.ReadDir(e.dlqDir)
-	if err != nil {
-		t.Fatalf("read dlq dir: %v", err)
-	}
-	if len(entries) == 0 {
-		t.Skip("the index accepted the oversized value, so nothing was refused")
+	if _, found := e.document("25000"); found {
+		t.Fatal("the refused document was indexed after all, so this test proves nothing")
 	}
 
-	body, err := os.ReadFile(filepath.Join(e.dlqDir, entries[0].Name()))
-	if err != nil {
-		t.Fatalf("read dlq file: %v", err)
+	var recorded string
+	e.waitFor("the refused document to be recorded", func() bool {
+		entries, err := os.ReadDir(e.dlqDir)
+		if err != nil || len(entries) == 0 {
+			return false
+		}
+		body, err := os.ReadFile(filepath.Join(e.dlqDir, entries[0].Name()))
+		if err != nil {
+			return false
+		}
+		recorded = string(body)
+		return strings.Contains(recorded, "25000")
+	})
+
+	if !strings.Contains(recorded, "\"status\":400") {
+		t.Errorf("expected the record to carry the refusal status:\n%s", recorded)
 	}
-	if !strings.Contains(string(body), "25000") {
-		t.Errorf("the refused document was not recorded:\n%s", body)
+	// The body is withheld unless asked for, since row values can hold personal data.
+	if strings.Contains(recorded, "\"body\":") {
+		t.Errorf("the document body should not be recorded by default:\n%s", recorded)
+	}
+}
+
+// putNarrowIndex installs a mapping identical to the usual one except that user_id
+// is a byte, which large values cannot be indexed into.
+func (e *env) putNarrowIndex() {
+	e.t.Helper()
+
+	body := `{
+	  "settings": {"number_of_shards": 1, "number_of_replicas": 0},
+	  "mappings": {
+	    "dynamic": "strict",
+	    "properties": {
+	      "id":           {"type": "unsigned_long"},
+	      "user_id":      {"type": "byte"},
+	      "status":       {"type": "keyword"},
+	      "channels":     {"type": "keyword"},
+	      "total_amount": {"type": "keyword"},
+	      "is_gift":      {"type": "boolean"},
+	      "note_latin1":  {"type": "keyword"},
+	      "metadata":     {"type": "object", "enabled": false},
+	      "placed_at":    {"type": "date"},
+	      "updated_at":   {"type": "date"}
+	    }
+	  }
+	}`
+
+	status, payload := e.esRequest(http.MethodPut, "/"+e.index, body)
+	if status >= 300 {
+		e.t.Fatalf("create narrow index: status %d: %s", status, payload)
 	}
 }
