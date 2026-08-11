@@ -71,6 +71,24 @@ func resolveFields(meta *TableMeta, include, exclude, key []string, rename map[s
 	return fields, warnings, nil
 }
 
+// ExpectedElasticsearchFields returns the field types a stream will write, keyed by
+// destination name.
+//
+// The same resolution the generator uses, so what is validated is what is sent. A
+// separate list of expectations would be one more thing to keep in step.
+func ExpectedElasticsearchFields(meta *TableMeta, include, exclude, key []string, rename map[string]string) (map[string]string, error) {
+	fields, _, err := resolveFields(meta, include, exclude, key, rename)
+	if err != nil {
+		return nil, err
+	}
+
+	expected := make(map[string]string, len(fields))
+	for _, f := range fields {
+		expected[f.name] = f.mapped.Elasticsearch
+	}
+	return expected, nil
+}
+
 // GenerateElasticsearch produces an index mapping.
 func GenerateElasticsearch(meta *TableMeta, include, exclude, key []string, rename map[string]string, shards, replicas int) (Generated, error) {
 	fields, warnings, err := resolveFields(meta, include, exclude, key, rename)

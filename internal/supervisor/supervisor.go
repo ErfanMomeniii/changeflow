@@ -199,6 +199,13 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	}
 	defer destination.Close()
 
+	// Checked before a single document is written. A field declared as the wrong type
+	// does not fail the write: it changes the value, and correcting it afterwards means
+	// rebuilding everything written in the meantime.
+	if err := s.validateDestination(ctx, destination, meta); err != nil {
+		return err
+	}
+
 	deadLetters, err := dlq.New(dlq.Options{Dir: s.dlqDir, Stream: s.stream.Name})
 	if err != nil {
 		return err
@@ -518,6 +525,33 @@ func estimateRows(ctx context.Context, db *sql.DB, meta *schema.TableMeta) uint6
 		return 0
 	}
 	return uint64(rows.Int64)
+}
+
+// validateDestination compares the destination's schema against what this stream will
+// write.
+func (s *Supervisor) validateDestination(ctx context.Context, destination sink.Sink, meta *schema.TableMeta) error {
+	es, ok := destination.(*elasticsearch.Sink)
+	if !ok {
+		// Nothing to check for a destination whose schema changeflow cannot read.
+		return nil
+	}
+
+	key, err := meta.ResolveKey(s.stream.Mapping.Key)
+	if err != nil {
+		return fmt.Errorf("supervisor: %w", err)
+	}
+	expected, err := schema.ExpectedElasticsearchFields(meta,
+		s.stream.Mapping.Include, s.stream.Mapping.Exclude, key, s.stream.Mapping.Rename)
+	if err != nil {
+		return fmt.Errorf("supervisor: %w", err)
+	}
+
+	if err := es.ValidateMapping(ctx, expected); err != nil {
+		return fmt.Errorf("supervisor: %w", err)
+	}
+	s.log.Info("destination schema matches the stream",
+		"stream", s.stream.Name, "index", s.stream.Sink.Index, "fields", len(expected))
+	return nil
 }
 
 func (s *Supervisor) buildSink() (sink.Sink, error) {
