@@ -75,6 +75,17 @@ type ChangeEvent struct {
 	// monotonically, since it is what decides which of two writes to the same key
 	// wins in the destination.
 	Seq uint64
+
+	// Cursor is the position a table scan resumes after, set on the last event of
+	// each chunk and empty otherwise.
+	//
+	// It travels on the event for the same reason a GTID does: only the stage that
+	// sees an acknowledgement may record a position. A scanner recording its own
+	// progress on emit would advance past rows that were never written, and nothing
+	// would ever read them again.
+	Cursor []byte
+	// RowsScanned accompanies Cursor, for reporting scan progress.
+	RowsScanned uint64
 }
 
 // Values returns the row a destination should be written from: the new values for

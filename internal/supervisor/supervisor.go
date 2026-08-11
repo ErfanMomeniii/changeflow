@@ -28,6 +28,7 @@ import (
 	"github.com/ErfanMomeniii/changeflow/internal/sink/dlq"
 	"github.com/ErfanMomeniii/changeflow/internal/sink/elasticsearch"
 	"github.com/ErfanMomeniii/changeflow/internal/source/binlog"
+	"github.com/ErfanMomeniii/changeflow/internal/source/snapshot"
 )
 
 // seqBlockSize is how many versions are reserved per durable write. Large enough
@@ -171,7 +172,10 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		return err
 	}
 
-	startGTID, err := s.startPosition(ctx, store, sourceDB)
+	// The scan runs first when a stream has never completed one. Rows written before
+	// the stream existed produce no binlog events at all, so this is the only way
+	// they reach the destination.
+	startGTID, err := s.snapshotIfNeeded(ctx, store, sourceDB, allocator, runner, meta)
 	if err != nil {
 		return err
 	}
@@ -219,34 +223,164 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	return nil
 }
 
-// startPosition resumes from the recorded position, or begins at the source's
-// current position for a stream that has never run.
+// snapshotIfNeeded runs the table scan when one is outstanding, and returns the
+// position streaming should begin from.
 //
-// Starting at "now" means rows written earlier are not in the stream at all. Only a
-// table scan can supply those, which is what the snapshot phase is for.
-func (s *Supervisor) startPosition(ctx context.Context, store checkpoint.Store, sourceDB *sql.DB) (string, error) {
+// The order is what makes a lock-free scan correct. The position is captured before
+// the scan starts, so every change made during the scan is still in the binlog
+// afterwards, and each such change carries a version above the one stamped on
+// scanned rows. A row read by the scan and modified concurrently is therefore
+// overwritten by the modification, never the other way round.
+func (s *Supervisor) snapshotIfNeeded(
+	ctx context.Context,
+	store *checkpoint.MySQLStore,
+	sourceDB *sql.DB,
+	allocator *checkpoint.Allocator,
+	runner *pipeline.Runner,
+	meta *schema.TableMeta,
+) (string, error) {
 	cp, err := store.Load(ctx, s.stream.Name)
-	switch {
-	case err == nil && cp.GTIDSet != "":
-		return cp.GTIDSet, nil
-	case err != nil && !errors.Is(err, checkpoint.ErrNotFound):
-		// A position that cannot be read must never be guessed at: streaming from
-		// the wrong place silently skips or duplicates data.
+	if err != nil && !errors.Is(err, checkpoint.ErrNotFound) {
+		// A position that cannot be read must never be guessed at: streaming from the
+		// wrong place silently skips or duplicates data.
 		return "", fmt.Errorf("supervisor: read checkpoint: %w", err)
 	}
 
+	// Already streaming: resume where the destination was last acknowledged.
+	if cp.SnapshotDone && cp.GTIDSet != "" {
+		return cp.GTIDSet, nil
+	}
+
+	if !s.stream.Snapshot.Enabled {
+		if cp.GTIDSet != "" {
+			return cp.GTIDSet, nil
+		}
+		position, err := currentPosition(ctx, sourceDB)
+		if err != nil {
+			return "", err
+		}
+		s.log.Warn("snapshots are disabled, so rows written before now will not appear in the destination",
+			"stream", s.stream.Name, "from", position)
+		cp.Stream, cp.SnapshotDone, cp.GTIDSet = s.stream.Name, true, position
+		if err := store.Save(ctx, cp); err != nil {
+			return "", fmt.Errorf("supervisor: record start position: %w", err)
+		}
+		return position, nil
+	}
+
+	// A first attempt captures the position and the version to stamp on scanned
+	// rows. A resumed attempt keeps both, or the guarantee above would not hold.
+	if cp.SnapshotStartGTID == "" {
+		position, err := currentPosition(ctx, sourceDB)
+		if err != nil {
+			return "", err
+		}
+		baseSeq, err := allocator.Next(ctx)
+		if err != nil {
+			return "", fmt.Errorf("supervisor: allocate the snapshot version: %w", err)
+		}
+
+		cp.Stream = s.stream.Name
+		cp.SnapshotStartGTID = position
+		cp.SnapshotBaseSeq = baseSeq
+		cp.SnapshotRowsTotal = estimateRows(ctx, sourceDB, meta)
+		if err := store.Save(ctx, cp); err != nil {
+			return "", fmt.Errorf("supervisor: record the snapshot start: %w", err)
+		}
+		s.log.Info("starting a table scan",
+			"stream", s.stream.Name, "table", s.stream.Table,
+			"from_position", position, "estimated_rows", cp.SnapshotRowsTotal)
+	} else {
+		s.log.Info("resuming a table scan",
+			"stream", s.stream.Name, "rows_done", cp.SnapshotRowsDone,
+			"estimated_rows", cp.SnapshotRowsTotal)
+	}
+
+	scanDB := sourceDB
+	if s.cfg.Source.SnapshotDSN != "" {
+		// A scan is the only part of changeflow that can slow the source down, so it
+		// can be pointed at a replica instead.
+		scanDB, err = openMySQL(ctx, s.cfg.Source.SnapshotDSN)
+		if err != nil {
+			return "", fmt.Errorf("supervisor: connect for the table scan: %w", err)
+		}
+		defer scanDB.Close()
+	}
+
+	key, err := meta.ResolveKey(s.stream.Mapping.Key)
+	if err != nil {
+		return "", fmt.Errorf("supervisor: %w", err)
+	}
+
+	scanner, err := snapshot.New(snapshot.Options{
+		DB:            scanDB,
+		Meta:          meta,
+		Key:           key,
+		ChunkSize:     s.stream.Snapshot.ChunkSize,
+		MaxRowsPerSec: s.stream.Snapshot.MaxRateRowsPerSec,
+		Cursor:        cp.SnapshotCursor,
+		BaseSeq:       cp.SnapshotBaseSeq,
+		Observe: func(rows uint64) {
+			s.log.Info("table scan progress", "stream", s.stream.Name, "rows", rows)
+		},
+		Logger: s.log,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	if err := runner.Run(ctx, scanner.Events(ctx)); err != nil {
+		return "", err
+	}
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("supervisor: table scan: %w", err)
+	}
+	if !scanner.Done() {
+		// Stopping short is not a failure, but the scan must not be recorded as
+		// complete, or the rows it never reached would never be written.
+		return "", ctx.Err()
+	}
+
+	cp, err = store.Load(ctx, s.stream.Name)
+	if err != nil {
+		return "", fmt.Errorf("supervisor: read checkpoint after the scan: %w", err)
+	}
+	cp.Stream = s.stream.Name
+	cp.SnapshotDone = true
+	cp.SnapshotRowsTotal = cp.SnapshotRowsDone
+	if err := store.Save(ctx, cp); err != nil {
+		return "", fmt.Errorf("supervisor: record the completed scan: %w", err)
+	}
+	s.log.Info("table scan complete", "stream", s.stream.Name, "rows", cp.SnapshotRowsDone)
+
+	// Streaming begins where the scan began, so every change made during it is
+	// applied on top.
+	return cp.SnapshotStartGTID, nil
+}
+
+func currentPosition(ctx context.Context, db *sql.DB) (string, error) {
 	var gtid string
-	if err := sourceDB.QueryRowContext(ctx, "SELECT @@GLOBAL.gtid_executed").Scan(&gtid); err != nil {
+	if err := db.QueryRowContext(ctx, "SELECT @@GLOBAL.gtid_executed").Scan(&gtid); err != nil {
 		return "", fmt.Errorf("supervisor: read source position: %w", err)
 	}
 	gtid = strings.ReplaceAll(gtid, "\n", "")
 	if strings.TrimSpace(gtid) == "" {
 		return "", errors.New("supervisor: the source has logged no transactions, so there is no position to start from")
 	}
-
-	s.log.Warn("no recorded position, starting from the source's current position; rows written earlier will not appear until a snapshot runs",
-		"stream", s.stream.Name, "from", gtid)
 	return gtid, nil
+}
+
+// estimateRows reads the optimiser's row estimate, which drives a progress
+// percentage only. It is approximate by nature, and nothing depends on its accuracy.
+func estimateRows(ctx context.Context, db *sql.DB, meta *schema.TableMeta) uint64 {
+	var rows sql.NullInt64
+	err := db.QueryRowContext(ctx,
+		"SELECT table_rows FROM information_schema.tables WHERE table_schema = ? AND table_name = ?",
+		meta.Schema, meta.Table).Scan(&rows)
+	if err != nil || !rows.Valid || rows.Int64 < 0 {
+		return 0
+	}
+	return uint64(rows.Int64)
 }
 
 func (s *Supervisor) buildSink() (sink.Sink, error) {

@@ -432,6 +432,65 @@ func TestRunnerStopsOnContextCancellation(t *testing.T) {
 	}
 }
 
+// A scan position must be recorded on the same terms as a GTID: only once the
+// destination has accepted the rows. Recording it on emit would advance past rows
+// that were never written, and a scan never revisits them.
+func TestScanCursorIsRecordedOnlyAfterTheSinkAcknowledges(t *testing.T) {
+	h := newRunner(t, nil)
+
+	var cursorAtWriteTime []byte
+	h.sink.onWrite = func([]cdc.Doc) {
+		if cp, err := h.store.Load(context.Background(), "orders_to_es"); err == nil {
+			cursorAtWriteTime = cp.SnapshotCursor
+		}
+	}
+
+	// Two scanned rows, the second carrying the chunk's cursor.
+	first := cdc.ChangeEvent{Meta: runnerMeta(), Op: cdc.OpSnapshot, After: cdc.Row{uint64(1), "paid"}, Seq: 500}
+	second := cdc.ChangeEvent{
+		Meta: runnerMeta(), Op: cdc.OpSnapshot, After: cdc.Row{uint64(2), "paid"}, Seq: 500,
+		Cursor: []byte(`["2"]`), RowsScanned: 2,
+	}
+
+	if err := h.run(t, first, second); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	if len(cursorAtWriteTime) > 0 {
+		t.Fatalf("the cursor was recorded before the sink acknowledged: %s", cursorAtWriteTime)
+	}
+	cp := h.checkpoint(t)
+	if string(cp.SnapshotCursor) != `["2"]` {
+		t.Errorf("cursor = %s, want the chunk's cursor once acknowledged", cp.SnapshotCursor)
+	}
+	if cp.SnapshotRowsDone != 2 {
+		t.Errorf("rows done = %d, want 2", cp.SnapshotRowsDone)
+	}
+}
+
+// A failed write must leave the scan position where it was, so the chunk is read
+// again rather than skipped.
+func TestFailedWriteDoesNotAdvanceTheScanCursor(t *testing.T) {
+	h := newRunner(t, nil)
+	h.sink.reply = func(int, []cdc.Doc) (sink.Result, error) {
+		return sink.Result{}, errors.New("elasticsearch unavailable")
+	}
+
+	first := cdc.ChangeEvent{Meta: runnerMeta(), Op: cdc.OpSnapshot, After: cdc.Row{uint64(1), "paid"}, Seq: 500}
+	second := cdc.ChangeEvent{
+		Meta: runnerMeta(), Op: cdc.OpSnapshot, After: cdc.Row{uint64(2), "paid"}, Seq: 500,
+		Cursor: []byte(`["2"]`), RowsScanned: 2,
+	}
+
+	if err := h.run(t, first, second); err == nil {
+		t.Fatal("expected the run to fail when the sink cannot be written")
+	}
+
+	if cp, err := h.store.Load(context.Background(), "orders_to_es"); err == nil && len(cp.SnapshotCursor) > 0 {
+		t.Fatalf("cursor advanced to %s despite the write failing", cp.SnapshotCursor)
+	}
+}
+
 // A graceful stop must write what it is holding, so a shutdown does not hand the
 // next start a batch to redo.
 func TestPendingBatchIsWrittenOnCancellation(t *testing.T) {

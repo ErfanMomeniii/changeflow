@@ -237,38 +237,35 @@ func TestScanResumesFromACursor(t *testing.T) {
 		h.exec(t, "INSERT INTO orders (id,user_id,status,total_amount) VALUES (?,5,'paid',1.00)", 30300+i)
 	}
 
-	// First pass: stop after one chunk by refusing to record further progress.
-	var cursorAfterFirstChunk []byte
-	chunks := 0
-	first := h.scanner(t, func(o *Options) {
-		o.ChunkSize = 2
-		o.Progress = func(_ context.Context, _ uint64, cursor []byte) error {
-			chunks++
-			cursorAfterFirstChunk = append([]byte(nil), cursor...)
-			if chunks == 1 {
-				return context.Canceled // stand in for a crash
-			}
-			return nil
-		}
-	})
+	// First pass: take events until one carries a cursor, then stop as a crash would.
+	first := h.scanner(t, func(o *Options) { o.ChunkSize = 2 })
+	ctx, cancel := context.WithCancel(t.Context())
+	events := first.Events(ctx)
 
-	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
-	defer cancel()
-	var firstPass []cdc.ChangeEvent
-	for ev := range first.Events(ctx) {
+	var (
+		firstPass  []cdc.ChangeEvent
+		lastCursor []byte
+	)
+	for ev := range events {
 		firstPass = append(firstPass, ev)
+		if len(ev.Cursor) > 0 {
+			lastCursor = append([]byte(nil), ev.Cursor...)
+			cancel()
+			break
+		}
 	}
-	if len(cursorAfterFirstChunk) == 0 {
-		t.Fatal("no cursor was recorded")
+	cancel()
+	if len(lastCursor) == 0 {
+		t.Fatal("no event carried a cursor, so an interrupted scan could not resume")
 	}
 	if first.Done() {
 		t.Fatal("an interrupted scan must not report itself as complete")
 	}
 
-	// Second pass: resume from the recorded cursor.
+	// Second pass: resume from the cursor the first pass reached.
 	second := h.scanner(t, func(o *Options) {
 		o.ChunkSize = 2
-		o.Cursor = cursorAfterFirstChunk
+		o.Cursor = lastCursor
 	})
 	secondPass := collect(t, second)
 
@@ -276,10 +273,15 @@ func TestScanResumesFromACursor(t *testing.T) {
 		t.Error("a scan that reached the end must report itself as complete")
 	}
 
-	// No row appears in both passes: the cursor resumes strictly after the last row
-	// handed on.
+	// The cursor resumes strictly after the last row of the chunk it came from, so no
+	// row from a completed chunk is scanned twice.
 	seen := map[uint64]int{}
-	for _, ev := range append(firstPass, secondPass...) {
+	for _, ev := range firstPass {
+		if id, ok := value(t, ev, "id").(uint64); ok {
+			seen[id]++
+		}
+	}
+	for _, ev := range secondPass {
 		if id, ok := value(t, ev, "id").(uint64); ok {
 			seen[id]++
 		}
@@ -288,6 +290,43 @@ func TestScanResumesFromACursor(t *testing.T) {
 		if count > 1 {
 			t.Errorf("row %d was scanned %d times across the resume", id, count)
 		}
+	}
+}
+
+// The cursor rides on the last event of each chunk, and only there: a position per
+// row would be encoded work for no benefit.
+func TestOnlyTheLastEventOfAChunkCarriesACursor(t *testing.T) {
+	h := newHarness(t, "orders")
+
+	t.Cleanup(func() { h.writer.Exec("DELETE FROM orders WHERE id BETWEEN 30800 AND 30899") })
+	for i := 0; i < 4; i++ {
+		h.exec(t, "INSERT INTO orders (id,user_id,status,total_amount) VALUES (?,5,'paid',1.00)", 30800+i)
+	}
+
+	events := collect(t, h.scanner(t, func(o *Options) { o.ChunkSize = 2 }))
+	if len(events) < 4 {
+		t.Fatalf("expected at least 4 events, got %d", len(events))
+	}
+
+	var withCursor, withRows int
+	for _, ev := range events {
+		if len(ev.Cursor) > 0 {
+			withCursor++
+			if ev.RowsScanned == 0 {
+				t.Error("an event carrying a cursor must also report progress")
+			}
+			withRows++
+		}
+	}
+	// One per chunk, and chunks are smaller than the row count.
+	if withCursor == 0 {
+		t.Fatal("no event carried a cursor")
+	}
+	if withCursor == len(events) {
+		t.Fatalf("every one of %d events carried a cursor; expected one per chunk", len(events))
+	}
+	if withRows != withCursor {
+		t.Errorf("%d events carried a cursor but %d reported progress", withCursor, withRows)
 	}
 }
 
@@ -325,15 +364,12 @@ func TestScanReportsProgress(t *testing.T) {
 	var reports []uint64
 	s := h.scanner(t, func(o *Options) {
 		o.ChunkSize = 2
-		o.Progress = func(_ context.Context, rowsRead uint64, _ []byte) error {
-			reports = append(reports, rowsRead)
-			return nil
-		}
+		o.Observe = func(rowsRead uint64) { reports = append(reports, rowsRead) }
 	})
 	events := collect(t, s)
 
 	if len(reports) == 0 {
-		t.Fatal("progress was never reported, so an interrupted scan could not resume")
+		t.Fatal("progress was never observed")
 	}
 	for i := 1; i < len(reports); i++ {
 		if reports[i] <= reports[i-1] {

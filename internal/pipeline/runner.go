@@ -58,6 +58,10 @@ type Runner struct {
 	// pendingEventTsMs is the source timestamp of the newest event in the batch,
 	// which is what lag is measured from.
 	pendingEventTsMs int64
+	// pendingCursor is the scan position the current batch reaches, recorded on the
+	// same terms as a GTID: only once the destination has accepted the rows.
+	pendingCursor []byte
+	pendingRows   uint64
 }
 
 // NewRunner validates dependencies and prepares a runner.
@@ -181,6 +185,10 @@ func (r *Runner) handle(ctx context.Context, ev cdc.ChangeEvent) error {
 	if ms := ev.Timestamp.UnixMilli(); !ev.Timestamp.IsZero() && ms > r.pendingEventTsMs {
 		r.pendingEventTsMs = ms
 	}
+	if len(ev.Cursor) > 0 {
+		r.pendingCursor = ev.Cursor
+		r.pendingRows = ev.RowsScanned
+	}
 
 	for _, d := range docs {
 		if batch := r.batcher.Add(d); batch != nil {
@@ -269,8 +277,7 @@ func (r *Runner) deadLetter(ctx context.Context, rejections []sink.Rejection) er
 
 // advance records the position the acknowledged batch reached.
 func (r *Runner) advance(ctx context.Context) error {
-	if r.pendingGTID == "" {
-		// A snapshot scan produces no positions; its progress is tracked separately.
+	if r.pendingGTID == "" && len(r.pendingCursor) == 0 {
 		return nil
 	}
 
@@ -280,7 +287,13 @@ func (r *Runner) advance(ctx context.Context) error {
 	}
 
 	cp.Stream = r.stream
-	cp.GTIDSet = r.pendingGTID
+	if r.pendingGTID != "" {
+		cp.GTIDSet = r.pendingGTID
+	}
+	if len(r.pendingCursor) > 0 {
+		cp.SnapshotCursor = r.pendingCursor
+		cp.SnapshotRowsDone = r.pendingRows
+	}
 	if r.pendingEventTsMs > 0 {
 		cp.LastEventTsMs = r.pendingEventTsMs
 	}

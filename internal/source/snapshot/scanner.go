@@ -52,10 +52,10 @@ type Options struct {
 	// which is what makes scanning without a lock safe.
 	BaseSeq uint64
 
-	// Progress is called after each chunk is emitted, with a cursor that resumes
-	// exactly after the last row. Persisting it is what makes an interrupted scan
-	// resumable rather than restartable.
-	Progress func(ctx context.Context, rowsRead uint64, cursor []byte) error
+	// Observe is called after each chunk, for logging and metrics only. Durability
+	// is not its job: the cursor is carried on the last event of the chunk and
+	// recorded by whatever stage sees the write acknowledged.
+	Observe func(rowsRead uint64)
 
 	Logger *slog.Logger
 }
@@ -197,7 +197,13 @@ func (s *Snapshotter) run(ctx context.Context, out chan<- cdc.ChangeEvent) error
 			return nil
 		}
 
-		for _, row := range rows {
+		encodedCursor, err := encodeCursor(next)
+		if err != nil {
+			return err
+		}
+		rowsAfterChunk := s.rowsRead.Load() + uint64(len(rows))
+
+		for i, row := range rows {
 			ev := cdc.ChangeEvent{
 				Meta: s.opts.Meta,
 				Op:   cdc.OpSnapshot,
@@ -206,6 +212,15 @@ func (s *Snapshotter) run(ctx context.Context, out chan<- cdc.ChangeEvent) error
 				After: row,
 				Seq:   s.opts.BaseSeq,
 			}
+			// Only the last row of a chunk carries the cursor. Attaching one to every
+			// row would encode a position per row for no benefit, and a batch cut short
+			// mid-chunk simply resumes from the previous boundary and re-reads a chunk,
+			// which the destination absorbs.
+			if i == len(rows)-1 {
+				ev.Cursor = encodedCursor
+				ev.RowsScanned = rowsAfterChunk
+			}
+
 			select {
 			case out <- ev:
 			case <-ctx.Done():
@@ -213,19 +228,11 @@ func (s *Snapshotter) run(ctx context.Context, out chan<- cdc.ChangeEvent) error
 			}
 		}
 
-		s.rowsRead.Add(uint64(len(rows)))
+		s.rowsRead.Store(rowsAfterChunk)
 		cursor = next
 
-		// Recorded after the rows are handed on, so a crash resumes at a point whose
-		// rows have all been passed downstream at least once.
-		if s.opts.Progress != nil {
-			encoded, err := encodeCursor(cursor)
-			if err != nil {
-				return err
-			}
-			if err := s.opts.Progress(ctx, s.rowsRead.Load(), encoded); err != nil {
-				return fmt.Errorf("snapshot: record progress: %w", err)
-			}
+		if s.opts.Observe != nil {
+			s.opts.Observe(s.rowsRead.Load())
 		}
 
 		if err := limiter.wait(ctx, len(rows)); err != nil {

@@ -31,7 +31,16 @@ func (c *counterSeq) Next(context.Context) (uint64, error) {
 // for events on a stream that was killed.
 var nextServerID atomic.Uint32
 
+// idRange bounds the rows a test owns.
+//
+// Packages run in parallel, so another package's fixtures can be writing to the same
+// table while these tests assert on the order of events. Filtering by the identifiers
+// a test wrote makes each test independent of that, which is more useful than
+// serialising the suite to hide it.
+type idRange struct{ from, to uint64 }
+
 type liveHarness struct {
+	ids    idRange
 	db     *sql.DB
 	writer *sql.DB
 	stream *Streamer
@@ -42,6 +51,13 @@ type liveHarness struct {
 // newLiveHarness connects to the MySQL named by CHANGEFLOW_TEST_DSN, starts
 // replication from the current position, and returns the event stream.
 func newLiveHarness(t *testing.T, tables ...string) *liveHarness {
+	t.Helper()
+	return newLiveHarnessForIDs(t, idRange{}, tables...)
+}
+
+// newLiveHarnessForIDs returns a harness that only reports events for rows in the
+// given range.
+func newLiveHarnessForIDs(t *testing.T, ids idRange, tables ...string) *liveHarness {
 	t.Helper()
 
 	dsn := os.Getenv("CHANGEFLOW_TEST_DSN")
@@ -108,22 +124,45 @@ func newLiveHarness(t *testing.T, tables ...string) *liveHarness {
 	// Give replication a moment to register before the test writes.
 	time.Sleep(1500 * time.Millisecond)
 
-	return &liveHarness{db: db, writer: writer, stream: s, events: events, cancel: cancel}
+	return &liveHarness{ids: ids, db: db, writer: writer, stream: s, events: events, cancel: cancel}
 }
 
-// next waits for one event.
+// next waits for the next event belonging to this test, skipping any other package's
+// writes to the same table.
 func (h *liveHarness) next(t *testing.T) cdc.ChangeEvent {
 	t.Helper()
-	select {
-	case ev, ok := <-h.events:
-		if !ok {
-			t.Fatalf("stream closed: %v", h.stream.Err())
+
+	deadline := time.After(15 * time.Second)
+	for {
+		select {
+		case ev, ok := <-h.events:
+			if !ok {
+				t.Fatalf("stream closed: %v", h.stream.Err())
+			}
+			if h.owns(ev) {
+				return ev
+			}
+		case <-deadline:
+			t.Fatalf("no event for this test arrived; streamer error: %v", h.stream.Err())
+			return cdc.ChangeEvent{}
 		}
-		return ev
-	case <-time.After(10 * time.Second):
-		t.Fatalf("no event arrived; streamer error: %v", h.stream.Err())
-		return cdc.ChangeEvent{}
 	}
+}
+
+// owns reports whether an event belongs to the rows this test wrote.
+func (h *liveHarness) owns(ev cdc.ChangeEvent) bool {
+	if h.ids == (idRange{}) {
+		return true
+	}
+	values := ev.Values()
+	if len(values) == 0 {
+		return false
+	}
+	id, ok := values[0].(uint64)
+	if !ok {
+		return false
+	}
+	return id >= h.ids.from && id <= h.ids.to
 }
 
 func (h *liveHarness) exec(t *testing.T, query string, args ...any) {
@@ -134,7 +173,7 @@ func (h *liveHarness) exec(t *testing.T, query string, args ...any) {
 }
 
 func TestStreamerEmitsInsertUpdateDelete(t *testing.T) {
-	h := newLiveHarness(t, "shop.orders")
+	h := newLiveHarnessForIDs(t, idRange{9001, 9001}, "shop.orders")
 
 	h.exec(t, "INSERT INTO orders (id,user_id,status,total_amount) VALUES (9001,5,'paid',12.34)")
 	h.exec(t, "UPDATE orders SET status='shipped' WHERE id=9001")
@@ -183,7 +222,7 @@ func TestStreamerEmitsInsertUpdateDelete(t *testing.T) {
 // Versions must increase, since they are what decides which of two writes to one
 // key wins.
 func TestStreamerVersionsIncrease(t *testing.T) {
-	h := newLiveHarness(t, "shop.orders")
+	h := newLiveHarnessForIDs(t, idRange{9100, 9199}, "shop.orders")
 
 	for i := 0; i < 3; i++ {
 		h.exec(t, "INSERT INTO orders (id,user_id,status,total_amount) VALUES (?,5,'paid',1.00)", 9100+i)
@@ -203,7 +242,7 @@ func TestStreamerVersionsIncrease(t *testing.T) {
 // The values must arrive in the shapes the transform expects, which is the contract
 // between decoding and encoding.
 func TestStreamerDecodesValuesForTheTransform(t *testing.T) {
-	h := newLiveHarness(t, "shop.orders")
+	h := newLiveHarnessForIDs(t, idRange{9300, 9300}, "shop.orders")
 
 	h.exec(t, `INSERT INTO orders (id,user_id,status,channels,total_amount,is_gift,placed_at)
 	           VALUES (9300, 18446744073709551000, 'shipped', 'web,pos', 19.90, 1, '2026-08-11 10:00:00.000')`)
@@ -279,7 +318,7 @@ func TestStreamerIgnoresUnwatchedTables(t *testing.T) {
 // Adding a column changes the row width, and a stale definition would attribute
 // values to the wrong fields.
 func TestStreamerReloadsDefinitionAfterAlter(t *testing.T) {
-	h := newLiveHarness(t, "shop.orders")
+	h := newLiveHarnessForIDs(t, idRange{9500, 9599}, "shop.orders")
 
 	// Registered before anything can fail, so a mid-test failure still tidies up.
 	t.Cleanup(func() {
@@ -314,7 +353,7 @@ func TestStreamerReloadsDefinitionAfterAlter(t *testing.T) {
 // transaction, so it replays everything else it retains. That resurrects rows whose
 // deletes have since been purged, and re-does the entire binlog on every restart.
 func TestEventsCarryTheCumulativeExecutedSet(t *testing.T) {
-	h := newLiveHarness(t, "shop.orders")
+	h := newLiveHarnessForIDs(t, idRange{9600, 9699}, "shop.orders")
 
 	t.Cleanup(func() { h.writer.Exec("DELETE FROM orders WHERE id BETWEEN 9600 AND 9700") })
 	h.exec(t, "INSERT INTO orders (id,user_id,status,total_amount) VALUES (9600,5,'paid',1.00)")
@@ -355,7 +394,7 @@ func TestEventsCarryTheCumulativeExecutedSet(t *testing.T) {
 // ones must not: before the position became a cumulative set, resuming replayed the
 // entire retained binlog.
 func TestResumingFromAPositionDoesNotReplayEarlierTransactions(t *testing.T) {
-	h := newLiveHarness(t, "shop.orders")
+	h := newLiveHarnessForIDs(t, idRange{9700, 9799}, "shop.orders")
 
 	t.Cleanup(func() { h.writer.Exec("DELETE FROM orders WHERE id BETWEEN 9700 AND 9800") })
 	h.exec(t, "INSERT INTO orders (id,user_id,status,total_amount) VALUES (9700,5,'paid',1.00)")
