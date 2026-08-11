@@ -1,0 +1,99 @@
+// Package checkpoint stores each stream's replication position durably.
+//
+// A checkpoint holds no row data - only a position, a snapshot cursor, and a
+// version watermark. That makes the state disposable: losing it costs a
+// re-snapshot, never the data itself. It is also the contract other tools read to
+// report progress, so its fields are additive and versioned rather than
+// repurposed.
+package checkpoint
+
+import (
+	"context"
+	"errors"
+	"time"
+)
+
+// SchemaVersion identifies the layout of a stored checkpoint. A reader that finds
+// a higher version than it knows must refuse to interpret the row rather than
+// guess at fields it does not understand.
+const SchemaVersion = 1
+
+// ErrNotFound reports that a stream has no checkpoint yet, which is how a
+// first-ever run is distinguished from a lost one.
+var ErrNotFound = errors.New("checkpoint not found")
+
+// Checkpoint is one stream's durable position.
+type Checkpoint struct {
+	// Stream identifies which configured stream this position belongs to.
+	Stream string
+
+	// GTIDSet is the position already applied and acknowledged by the sink.
+	// Written only after a sink acknowledges a batch, so a crash replays rather
+	// than skips.
+	GTIDSet string
+
+	// SnapshotDone records whether the initial table scan finished. It lives here
+	// rather than in memory so restarts do not rescan.
+	SnapshotDone bool
+
+	// SnapshotStartGTID is the position captured before the scan began, and where
+	// streaming resumes once the scan completes.
+	SnapshotStartGTID string
+
+	// SnapshotCursor is the last primary key written by the scan, so an
+	// interrupted snapshot resumes instead of restarting.
+	SnapshotCursor []byte
+
+	// SnapshotBaseSeq is the version stamped on every snapshot row. Events
+	// replayed from SnapshotStartGTID carry higher versions, which is what stops a
+	// snapshot row from overwriting a newer change.
+	SnapshotBaseSeq uint64
+
+	// SnapshotRowsDone and SnapshotRowsTotal drive a progress estimate only.
+	// Total is an estimate from table statistics; nothing depends on its accuracy.
+	SnapshotRowsDone  uint64
+	SnapshotRowsTotal uint64
+
+	// SeqWatermark is the highest version reserved. Values up to it may already
+	// have been issued, so a new allocator must start above it.
+	SeqWatermark uint64
+
+	// LastEventTsMs is the source timestamp of the most recent applied event.
+	// Replication lag is derived from it rather than stored.
+	LastEventTsMs int64
+
+	// LastError records why a stream stopped, for operators and status tooling.
+	LastError string
+
+	// SchemaVersion is the layout version of this record.
+	SchemaVersion int
+
+	// UpdatedAt is set by the store on write.
+	UpdatedAt time.Time
+}
+
+// LagAt reports how far behind the source this checkpoint was at a given moment.
+// It returns false when no event has been applied yet, since zero lag and no data
+// are different states and must not look alike on a dashboard.
+func (c Checkpoint) LagAt(now time.Time) (time.Duration, bool) {
+	if c.LastEventTsMs == 0 {
+		return 0, false
+	}
+	lag := now.Sub(time.UnixMilli(c.LastEventTsMs))
+	if lag < 0 {
+		// The source clock can read ahead of ours; report caught up rather than a
+		// negative lag.
+		return 0, true
+	}
+	return lag, true
+}
+
+// Store persists checkpoints. Implementations must make Save atomic per stream:
+// a torn write would leave a position that was never actually reached.
+type Store interface {
+	// Load returns a stream's checkpoint, or ErrNotFound if it has none.
+	Load(ctx context.Context, stream string) (Checkpoint, error)
+
+	// Save writes the checkpoint, creating it if absent.
+	Save(ctx context.Context, cp Checkpoint) error
+}
