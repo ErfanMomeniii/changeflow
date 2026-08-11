@@ -20,6 +20,34 @@ type DeadLetterQueue interface {
 	Record(ctx context.Context, rejections []sink.Rejection) error
 }
 
+// Observer receives what a stream is doing, for metrics.
+//
+// An interface rather than a concrete recorder, so this package depends on no metrics
+// library and a test can assert on the reports themselves.
+type Observer interface {
+	// Event reports one change read from the source.
+	Event(op cdc.Op)
+	// Lag reports how far behind the source a just-handled event was.
+	Lag(seconds float64)
+	// Batch reports the size of a batch about to be written.
+	Batch(rows int)
+	// Write reports one batch's outcome. failed marks a batch the destination did not
+	// accept, which is retried.
+	Write(applied, stale, rejected int, elapsed time.Duration, failed bool)
+	// DeadLettered reports documents recorded as permanently refused.
+	DeadLettered(n int)
+}
+
+// nopObserver is used when none is supplied, so the runner never checks for nil on a
+// hot path.
+type nopObserver struct{}
+
+func (nopObserver) Event(cdc.Op)                             {}
+func (nopObserver) Lag(float64)                              {}
+func (nopObserver) Batch(int)                                {}
+func (nopObserver) Write(int, int, int, time.Duration, bool) {}
+func (nopObserver) DeadLettered(int)                         {}
+
 // RunnerOptions configures one stream's pipeline.
 type RunnerOptions struct {
 	Stream string
@@ -33,7 +61,9 @@ type RunnerOptions struct {
 	Now func() time.Time
 	// ShutdownGrace bounds the final write attempt when the context is cancelled.
 	ShutdownGrace time.Duration
-	Logger        *slog.Logger
+	// Observer receives metrics. Optional.
+	Observer Observer
+	Logger   *slog.Logger
 }
 
 // Runner drives one stream: it transforms events, batches the documents, writes
@@ -51,6 +81,7 @@ type Runner struct {
 	batcher       *Batcher
 	now           func() time.Time
 	shutdownGrace time.Duration
+	observer      Observer
 	log           *slog.Logger
 
 	// pendingGTID is the position the current batch reaches once acknowledged.
@@ -95,6 +126,10 @@ func NewRunner(opts RunnerOptions) (*Runner, error) {
 	if grace <= 0 {
 		grace = 30 * time.Second
 	}
+	observer := opts.Observer
+	if observer == nil {
+		observer = nopObserver{}
+	}
 
 	return &Runner{
 		stream:        opts.Stream,
@@ -105,6 +140,7 @@ func NewRunner(opts RunnerOptions) (*Runner, error) {
 		batcher:       batcher,
 		now:           now,
 		shutdownGrace: grace,
+		observer:      observer,
 		log:           log,
 	}, nil
 }
@@ -179,6 +215,13 @@ func (r *Runner) handle(ctx context.Context, ev cdc.ChangeEvent) error {
 		}})
 	}
 
+	r.observer.Event(ev.Op)
+	if !ev.Timestamp.IsZero() {
+		// Measured from the source's own timestamp, so it includes time spent queued
+		// inside changeflow rather than only time in transit.
+		r.observer.Lag(r.now().Sub(ev.Timestamp).Seconds())
+	}
+
 	if ev.GTID != "" {
 		r.pendingGTID = ev.GTID
 	}
@@ -233,7 +276,12 @@ func (r *Runner) flush(ctx context.Context) error {
 
 // write applies a batch and, once it is accepted, records the position it reached.
 func (r *Runner) write(ctx context.Context, batch []cdc.Doc) error {
+	r.observer.Batch(len(batch))
+
+	started := r.now()
 	result, err := r.sink.Write(ctx, batch)
+	r.observer.Write(result.Applied, result.Stale, len(result.Rejected), r.now().Sub(started), err != nil)
+
 	if err != nil {
 		// The position stays where it was, so a restart replays this batch. The
 		// destination's versioning makes that harmless.
@@ -267,6 +315,7 @@ func (r *Runner) deadLetter(ctx context.Context, rejections []sink.Rejection) er
 	if err := r.dlq.Record(ctx, rejections); err != nil {
 		return fmt.Errorf("pipeline %s: cannot record %d refused document(s): %w", r.stream, len(rejections), err)
 	}
+	r.observer.DeadLettered(len(rejections))
 
 	for _, rej := range rejections {
 		r.log.Warn("document refused by destination",

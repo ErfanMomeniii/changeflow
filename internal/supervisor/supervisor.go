@@ -15,10 +15,14 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	driver "github.com/go-sql-driver/mysql"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 
+	"github.com/ErfanMomeniii/changeflow/internal/cdc"
 	"github.com/ErfanMomeniii/changeflow/internal/checkpoint"
 	"github.com/ErfanMomeniii/changeflow/internal/config"
 	"github.com/ErfanMomeniii/changeflow/internal/pipeline"
@@ -29,6 +33,7 @@ import (
 	"github.com/ErfanMomeniii/changeflow/internal/sink/elasticsearch"
 	"github.com/ErfanMomeniii/changeflow/internal/source/binlog"
 	"github.com/ErfanMomeniii/changeflow/internal/source/snapshot"
+	"github.com/ErfanMomeniii/changeflow/internal/telemetry"
 )
 
 // seqBlockSize is how many versions are reserved per durable write. Large enough
@@ -43,6 +48,38 @@ type Supervisor struct {
 	log    *slog.Logger
 
 	dlqDir string
+
+	metrics *telemetry.Metrics
+	// state is what readiness is judged on. A stream that is behind is still alive,
+	// so this affects readiness only, never liveness.
+	state streamState
+}
+
+// streamState is the little that health reporting needs to know.
+type streamState struct {
+	mu        sync.Mutex
+	streaming bool
+	lastEvent time.Time
+	lastError error
+}
+
+func (s *streamState) set(streaming bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.streaming = streaming
+	s.lastError = err
+}
+
+func (s *streamState) observed(at time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastEvent = at
+}
+
+func (s *streamState) snapshot() (bool, time.Time, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.streaming, s.lastEvent, s.lastError
 }
 
 // New prepares a supervisor for one configured stream.
@@ -62,6 +99,25 @@ func New(cfg *config.Config, streamName, dlqDir string, log *slog.Logger) (*Supe
 
 // Run starts the stream and blocks until the context ends or something fails.
 func (s *Supervisor) Run(ctx context.Context) error {
+	registry := prometheus.NewRegistry()
+	// The process collector gives memory and file descriptor figures, which are the
+	// first things asked about when a container is restarting.
+	registry.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
+	registry.MustRegister(collectors.NewGoCollector())
+	s.metrics = telemetry.New(registry, s.stream.Name)
+
+	if s.cfg.Runtime.MetricsAddr != "" {
+		server := telemetry.NewServer(s.cfg.Runtime.MetricsAddr, registry, telemetry.Health{Ready: s.ready})
+		go func() {
+			if err := server.Start(ctx); err != nil {
+				// Losing observability is serious but not a reason to stop replicating.
+				s.log.Error("metrics endpoint stopped", "error", err)
+			}
+		}()
+		defer server.Shutdown()
+		s.log.Info("serving metrics and health", "address", s.cfg.Runtime.MetricsAddr)
+	}
+
 	sourceDB, err := openMySQL(ctx, s.cfg.Source.DSN)
 	if err != nil {
 		return fmt.Errorf("supervisor: connect to source: %w", err)
@@ -166,6 +222,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			FlushInterval: s.stream.Batch.FlushInterval.Duration(),
 		},
 		ShutdownGrace: s.cfg.Runtime.ShutdownGrace.Duration(),
+		Observer:      s.observer(),
 		Logger:        s.log,
 	})
 	if err != nil {
@@ -210,7 +267,11 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		"sink", s.stream.Sink.Type, "from", startGTID)
 
 	events := streamer.Events(ctx)
+	s.state.set(true, nil)
+	go s.reportQueueDepth(ctx, events)
+
 	runErr := runner.Run(ctx, events)
+	s.state.set(false, runErr)
 
 	// A reader failure is the more useful diagnosis: the runner usually just sees
 	// its input end.
@@ -321,13 +382,18 @@ func (s *Supervisor) snapshotIfNeeded(
 		Cursor:        cp.SnapshotCursor,
 		BaseSeq:       cp.SnapshotBaseSeq,
 		Observe: func(rows uint64) {
-			s.log.Info("table scan progress", "stream", s.stream.Name, "rows", rows)
+			s.metrics.SnapshotProgress(rows, cp.SnapshotRowsTotal)
+			s.log.Info("table scan progress",
+				"stream", s.stream.Name, "rows", rows, "estimated_total", cp.SnapshotRowsTotal)
 		},
 		Logger: s.log,
 	})
 	if err != nil {
 		return "", err
 	}
+
+	s.metrics.SnapshotRunning(true)
+	defer s.metrics.SnapshotRunning(false)
 
 	if err := runner.Run(ctx, scanner.Events(ctx)); err != nil {
 		return "", err
@@ -356,6 +422,77 @@ func (s *Supervisor) snapshotIfNeeded(
 	// Streaming begins where the scan began, so every change made during it is
 	// applied on top.
 	return cp.SnapshotStartGTID, nil
+}
+
+// observer adapts the metrics recorder to what the pipeline reports, and keeps the
+// state readiness is judged on up to date.
+func (s *Supervisor) observer() pipeline.Observer {
+	return &supervisorObserver{metrics: s.metrics, state: &s.state}
+}
+
+type supervisorObserver struct {
+	metrics *telemetry.Metrics
+	state   *streamState
+}
+
+func (o *supervisorObserver) Event(op cdc.Op) { o.metrics.Event(op) }
+
+func (o *supervisorObserver) Lag(seconds float64) {
+	o.metrics.Lag(seconds)
+	o.state.observed(time.Now())
+}
+
+func (o *supervisorObserver) Batch(rows int) { o.metrics.Batch(rows) }
+
+func (o *supervisorObserver) Write(applied, stale, rejected int, elapsed time.Duration, failed bool) {
+	o.metrics.Write(applied, stale, rejected, elapsed, failed)
+}
+
+func (o *supervisorObserver) DeadLettered(n int) { o.metrics.DeadLettered(n) }
+
+// ready reports whether the stream is fit to serve traffic.
+//
+// A stream that is merely behind is still alive, so this is readiness rather than
+// liveness: restarting a lagging stream would only push it further behind.
+func (s *Supervisor) ready() error {
+	streaming, lastEvent, lastErr := s.state.snapshot()
+	if lastErr != nil {
+		return lastErr
+	}
+	if !streaming {
+		return errors.New("not streaming yet")
+	}
+	// A quiet table produces no events, so silence alone cannot mean unhealthy. Only
+	// an event older than the threshold does, which means changes exist and are not
+	// being applied.
+	if !lastEvent.IsZero() {
+		if behind := time.Since(lastEvent); behind > readinessLagLimit {
+			return fmt.Errorf("last change applied %s ago", behind.Round(time.Second))
+		}
+	}
+	return nil
+}
+
+// readinessLagLimit is how stale the last applied change may be before a stream stops
+// reporting itself ready.
+const readinessLagLimit = 5 * time.Minute
+
+// reportQueueDepth samples how many events are waiting.
+//
+// Pinned at the buffer size means the destination is setting the pace, which is the
+// difference between a slow source and a slow sink.
+func (s *Supervisor) reportQueueDepth(ctx context.Context, events <-chan cdc.ChangeEvent) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.metrics.QueueDepth(len(events))
+		}
+	}
 }
 
 func currentPosition(ctx context.Context, db *sql.DB) (string, error) {
