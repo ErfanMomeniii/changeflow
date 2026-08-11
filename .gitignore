@@ -24,9 +24,34 @@ profile.cov
 go.work
 go.work.sum
 
+# Build output
+/bin/
+
+# Captured binlog fixtures — regenerate with `make tail`
+/test/fixtures/binlog/
+
 # env file
 .env
 
 # Editor/IDE
-# .idea/
-# .vscode/
+.idea/
+.vscode/
+
+# AI assistant tooling and AI-facing working docs — local to a developer, never shared
+.ai/
+.claude/
+.claude-flow/
+.qodo/
+.cursor/
+.cursorrules
+.windsurf/
+.continue/
+.aider*
+.codeium/
+.github/copilot-instructions.md
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+GEMINI.md
+.mcp.json
+docs/superpowers/
