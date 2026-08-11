@@ -61,9 +61,14 @@ type Options struct {
 
 // Sink writes documents to Elasticsearch.
 type Sink struct {
-	opts    Options
-	client  *http.Client
-	nextURL atomic.Uint64
+	opts   Options
+	client *http.Client
+	// indexAction and deleteAction are the constant leading part of a bulk action,
+	// encoded once. The index name does not change per document, so re-encoding it a
+	// thousand times per batch is pure waste on the hot path.
+	indexAction  []byte
+	deleteAction []byte
+	nextURL      atomic.Uint64
 }
 
 // New validates options and returns a sink.
@@ -102,7 +107,17 @@ func New(opts Options) (*Sink, error) {
 		opts.Addresses[i] = strings.TrimRight(addr, "/")
 	}
 
-	return &Sink{opts: opts, client: client}, nil
+	encodedIndex, err := json.Marshal(opts.Index)
+	if err != nil {
+		return nil, fmt.Errorf("elasticsearch: encode index name %q: %w", opts.Index, err)
+	}
+
+	return &Sink{
+		opts:         opts,
+		client:       client,
+		indexAction:  []byte(`{"index":{"_index":` + string(encodedIndex) + `,"_id":`),
+		deleteAction: []byte(`{"delete":{"_index":` + string(encodedIndex) + `,"_id":`),
+	}, nil
 }
 
 // Write applies a batch, retrying the documents that failed for a reason a retry
@@ -294,25 +309,16 @@ func (s *Sink) encodeBulk(docs []cdc.Doc) ([]byte, error) {
 			return nil, errors.New("elasticsearch: document has no key")
 		}
 
-		action := "index"
 		if d.Deleted {
-			action = "delete"
+			buf.Write(s.deleteAction)
+		} else {
+			buf.Write(s.indexAction)
 		}
-
-		buf.WriteString(`{"`)
-		buf.WriteString(action)
-		buf.WriteString(`":{"_index":`)
-		if err := writeJSONString(&buf, s.opts.Index); err != nil {
-			return nil, err
-		}
-		buf.WriteString(`,"_id":`)
-		if err := writeJSONString(&buf, d.Key); err != nil {
-			return nil, err
-		}
+		appendJSONString(&buf, d.Key)
 		// External versioning makes the cluster, not us, enforce that an older write
 		// never overwrites a newer one.
 		buf.WriteString(`,"version":`)
-		buf.WriteString(strconv.FormatUint(d.Version, 10))
+		buf.Write(strconv.AppendUint(buf.AvailableBuffer(), d.Version, 10))
 		buf.WriteString(`,"version_type":"external"}}`)
 		buf.WriteByte('\n')
 
@@ -328,13 +334,28 @@ func (s *Sink) encodeBulk(docs []cdc.Doc) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func writeJSONString(buf *bytes.Buffer, s string) error {
-	encoded, err := json.Marshal(s)
-	if err != nil {
-		return fmt.Errorf("elasticsearch: encode %q: %w", s, err)
+// appendJSONString writes a quoted, escaped string without allocating an
+// intermediate value. Document keys are escaped by the pipeline, but a key from
+// another source could still contain a quote or control character.
+func appendJSONString(buf *bytes.Buffer, s string) {
+	buf.WriteByte('"')
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '"':
+			buf.WriteString(`\"`)
+		case c == '\\':
+			buf.WriteString(`\\`)
+		case c < 0x20:
+			const hexDigits = "0123456789abcdef"
+			buf.WriteString(`\u00`)
+			buf.WriteByte(hexDigits[c>>4])
+			buf.WriteByte(hexDigits[c&0x0f])
+		default:
+			buf.WriteByte(c)
+		}
 	}
-	buf.Write(encoded)
-	return nil
+	buf.WriteByte('"')
 }
 
 func (s *Sink) post(ctx context.Context, body []byte) (int, []byte, error) {
