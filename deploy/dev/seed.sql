@@ -13,7 +13,10 @@ GRANT SELECT ON `shop`.* TO 'cdc'@'%';
 -- The checkpoint store lives in its own database with its own grants, so the
 -- replication user can never write and the checkpoint user can never read rows.
 CREATE DATABASE IF NOT EXISTS changeflow_meta;
-GRANT SELECT, INSERT, UPDATE, DELETE ON `changeflow_meta`.* TO 'cdc'@'%';
+-- CREATE and DROP are granted here for convenience so a fresh development
+-- database can build its own checkpoint table. In production, apply that DDL with
+-- a migration tool and give the running service only the DML rights above.
+GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP ON `changeflow_meta`.* TO 'cdc'@'%';
 FLUSH PRIVILEGES;
 
 USE `shop`;

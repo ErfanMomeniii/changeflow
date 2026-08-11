@@ -1,7 +1,8 @@
 DEV_DSN ?= cdc:cdc@tcp(127.0.0.1:13306)/
+DEV_META_DSN ?= cdc:cdc@tcp(127.0.0.1:13306)/changeflow_meta?parseTime=true
 COMPOSE := docker compose -f deploy/dev/docker-compose.yml
 
-.PHONY: help build test vet check dev-up dev-sinks dev-down dev-logs dev-mysql dev-es dev-ch preflight tail
+.PHONY: help build test test-integration vet check check-all dev-up dev-sinks dev-down dev-logs dev-mysql dev-es dev-ch preflight tail
 
 help:
 	@grep -E '^[a-z-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -12,10 +13,15 @@ build: ## Build the binary
 test: ## Run unit tests
 	go test ./... -count=1
 
+test-integration: ## Run tests that need the dev containers running
+	CHANGEFLOW_TEST_DSN="$(DEV_META_DSN)" go test ./... -count=1
+
 vet: ## Static checks
 	go vet ./...
 
-check: vet test ## Everything CI runs
+check: vet test ## Fast checks, no containers needed
+
+check-all: vet test-integration ## Everything, including tests against live services
 
 dev-up: ## Start a CDC-configured MySQL on port 13306
 	$(COMPOSE) up -d --wait
