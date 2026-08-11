@@ -87,8 +87,9 @@ func setup(t *testing.T) *env {
 	e.db = db
 
 	e.binary = buildBinary(t)
-	e.createIndex()
+	// The configuration comes first: the mapping is generated from it.
 	e.config = e.writeConfig()
+	e.createIndex()
 
 	t.Cleanup(func() {
 		e.deleteIndex()
@@ -152,12 +153,35 @@ func repoRoot(t *testing.T) string {
 	}
 }
 
-// createIndex installs an explicit mapping.
+// createIndex installs the mapping the binary generates for this stream.
 //
-// Dynamic mapping would guess `long` for the identifier and then reject any value
-// above 2^63, which is exactly the case the type map exists to handle. Managing the
-// mapping outside the service is also how it works in production.
+// Generated rather than hand-written, so the index cannot drift from the type map
+// replication uses: a mapping that guesses `long` for an unsigned identifier would
+// wrap every value above 2^63. Applying it separately is also how it works in
+// production, where changeflow never issues DDL.
 func (e *env) createIndex() {
+	e.t.Helper()
+
+	cmd := exec.Command(e.binary, "generate-schema",
+		"-c", e.config, "--stream", e.streamName(), "--replicas", "0")
+	cmd.Dir = repoRoot(e.t)
+	mapping, err := cmd.Output()
+	if err != nil {
+		e.t.Fatalf("generate schema: %v", err)
+	}
+
+	e.deleteIndex()
+	status, payload := e.esRequest(http.MethodPut, "/"+e.index, string(mapping))
+	if status >= 300 {
+		e.t.Fatalf("create index: status %d: %s\nmapping was:\n%s", status, payload, mapping)
+	}
+}
+
+// createIndexManually installs a hand-written mapping for the one test that needs an
+// unsuitable one: user_id is declared as a byte, so 7 indexes and 99999 does not.
+// That makes the destination refuse a specific row rather than a whole field, which is
+// what a dead letter test needs.
+func (e *env) createIndexManually() {
 	e.t.Helper()
 
 	body := `{
@@ -166,7 +190,7 @@ func (e *env) createIndex() {
 	    "dynamic": "strict",
 	    "properties": {
 	      "id":           {"type": "unsigned_long"},
-	      "user_id":      {"type": "unsigned_long"},
+	      "user_id":      {"type": "byte"},
 	      "status":       {"type": "keyword"},
 	      "channels":     {"type": "keyword"},
 	      "total_amount": {"type": "keyword"},
@@ -743,9 +767,9 @@ func TestStatusReportsProgress(t *testing.T) {
 // reject teaches nothing, because changeflow would never see it.
 func TestRefusedDocumentGoesToTheDeadLetterQueueAndStreamContinues(t *testing.T) {
 	e := setup(t)
-	// Replace the standard mapping with one whose user_id cannot hold large values.
+	// Replace the generated mapping with one whose user_id cannot hold large values.
 	e.deleteIndex()
-	e.putNarrowIndex()
+	e.createIndexManually()
 
 	e.start()
 
@@ -780,35 +804,5 @@ func TestRefusedDocumentGoesToTheDeadLetterQueueAndStreamContinues(t *testing.T)
 	// The body is withheld unless asked for, since row values can hold personal data.
 	if strings.Contains(recorded, "\"body\":") {
 		t.Errorf("the document body should not be recorded by default:\n%s", recorded)
-	}
-}
-
-// putNarrowIndex installs a mapping identical to the usual one except that user_id
-// is a byte, which large values cannot be indexed into.
-func (e *env) putNarrowIndex() {
-	e.t.Helper()
-
-	body := `{
-	  "settings": {"number_of_shards": 1, "number_of_replicas": 0},
-	  "mappings": {
-	    "dynamic": "strict",
-	    "properties": {
-	      "id":           {"type": "unsigned_long"},
-	      "user_id":      {"type": "byte"},
-	      "status":       {"type": "keyword"},
-	      "channels":     {"type": "keyword"},
-	      "total_amount": {"type": "keyword"},
-	      "is_gift":      {"type": "boolean"},
-	      "note_latin1":  {"type": "keyword"},
-	      "metadata":     {"type": "object", "enabled": false},
-	      "placed_at":    {"type": "date"},
-	      "updated_at":   {"type": "date"}
-	    }
-	  }
-	}`
-
-	status, payload := e.esRequest(http.MethodPut, "/"+e.index, body)
-	if status >= 300 {
-		e.t.Fatalf("create narrow index: status %d: %s", status, payload)
 	}
 }

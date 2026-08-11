@@ -26,6 +26,7 @@ import (
 	"github.com/ErfanMomeniii/changeflow/internal/checkpoint"
 	"github.com/ErfanMomeniii/changeflow/internal/config"
 	"github.com/ErfanMomeniii/changeflow/internal/preflight"
+	"github.com/ErfanMomeniii/changeflow/internal/schema"
 	"github.com/ErfanMomeniii/changeflow/internal/supervisor"
 	"github.com/ErfanMomeniii/changeflow/internal/tail"
 )
@@ -47,6 +48,8 @@ func main() {
 		err = runStatus(ctx, os.Args[2:])
 	case "validate":
 		err = runValidate(os.Args[2:])
+	case "generate-schema":
+		err = runGenerateSchema(ctx, os.Args[2:])
 	case "tail":
 		err = runTail(ctx, os.Args[2:])
 	case "preflight":
@@ -78,6 +81,9 @@ Usage:
 
   changeflow validate -c <config.yaml>
         Check a configuration file without connecting to anything.
+
+  changeflow generate-schema -c <config.yaml> --stream <name>
+        Print the destination schema for a stream, to review and apply.
 
   changeflow preflight --dsn <dsn>
         Check whether a MySQL server is configured for CDC.
@@ -114,6 +120,76 @@ func runValidate(args []string) error {
 	for _, name := range cfg.StreamNames() {
 		s := cfg.Streams[name]
 		fmt.Printf("  %-28s %s -> %s\n", name, s.Table, s.Sink.Type)
+	}
+	return nil
+}
+
+// runGenerateSchema prints the destination schema for a stream.
+//
+// It is deliberately a printer rather than an applier: changeflow never issues DDL to
+// a destination. The output is committed and applied by whatever migration tooling the
+// project already uses, so a schema change is reviewed like any other change.
+func runGenerateSchema(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("generate-schema", flag.ExitOnError)
+	path := fs.String("c", "changeflow.yaml", "path to the configuration file")
+	streamName := fs.String("stream", "", "which configured stream to generate for")
+	shards := fs.Int("shards", 1, "number_of_shards for a generated Elasticsearch index")
+	replicas := fs.Int("replicas", 1, "number_of_replicas for a generated Elasticsearch index")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *streamName == "" {
+		return errors.New("--stream is required")
+	}
+
+	cfg, err := config.Load(*path)
+	if err != nil {
+		return err
+	}
+	stream, err := cfg.Stream(*streamName)
+	if err != nil {
+		return err
+	}
+
+	db, err := open(ctx, cfg.Source.DSN)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	// Read from the live source, so what is generated matches what will be replicated
+	// rather than what someone remembers the table looking like.
+	meta, err := schema.DBLoader{DB: db}.Load(ctx, stream.Schema(), stream.TableName())
+	if err != nil {
+		return err
+	}
+	key, err := meta.ResolveKey(stream.Mapping.Key)
+	if err != nil {
+		return err
+	}
+
+	var generated schema.Generated
+	switch stream.Sink.Type {
+	case config.SinkElasticsearch:
+		generated, err = schema.GenerateElasticsearch(meta,
+			stream.Mapping.Include, stream.Mapping.Exclude, key, stream.Mapping.Rename,
+			*shards, *replicas)
+	case config.SinkClickHouse:
+		generated, err = schema.GenerateClickHouse(meta,
+			stream.Mapping.Include, stream.Mapping.Exclude, key, stream.Mapping.Rename,
+			stream.Sink.Table)
+	default:
+		return fmt.Errorf("no schema generator for sink type %q", stream.Sink.Type)
+	}
+	if err != nil {
+		return err
+	}
+
+	// The schema goes to stdout so it can be redirected into a file, while the notes
+	// go to stderr so they do not end up inside it.
+	fmt.Print(generated.Body)
+	for _, warning := range generated.Warnings {
+		fmt.Fprintf(os.Stderr, "note: %s\n", warning)
 	}
 	return nil
 }
