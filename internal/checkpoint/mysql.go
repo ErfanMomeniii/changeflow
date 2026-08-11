@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	driver "github.com/go-sql-driver/mysql"
 )
 
 // Schema is the checkpoint table definition.
@@ -87,6 +89,22 @@ func (s *MySQLStore) EnsureSchema(ctx context.Context) error {
 	return nil
 }
 
+// ErrNotInitialized reports that the checkpoint table does not exist. It is
+// distinct from a missing row, because reporting status before anything has ever
+// run is a normal thing to want, while a vanished table is not.
+var ErrNotInitialized = errors.New("checkpoint table does not exist")
+
+// missingTableCode is MySQL's ER_NO_SUCH_TABLE.
+const missingTableCode = 1146
+
+func asMissingTable(err error) error {
+	var mysqlErr *driver.MySQLError
+	if errors.As(err, &mysqlErr) && mysqlErr.Number == missingTableCode {
+		return fmt.Errorf("%w: run changeflow once to create it, or apply the migration", ErrNotInitialized)
+	}
+	return nil
+}
+
 // Load returns a stream's checkpoint, or ErrNotFound.
 func (s *MySQLStore) Load(ctx context.Context, stream string) (Checkpoint, error) {
 	q := fmt.Sprintf(`
@@ -110,6 +128,9 @@ func (s *MySQLStore) Load(ctx context.Context, stream string) (Checkpoint, error
 	case errors.Is(err, sql.ErrNoRows):
 		return Checkpoint{}, ErrNotFound
 	case err != nil:
+		if missing := asMissingTable(err); missing != nil {
+			return Checkpoint{}, missing
+		}
 		return Checkpoint{}, fmt.Errorf("checkpoint: load %s: %w", stream, err)
 	}
 	if updatedAt.Valid {

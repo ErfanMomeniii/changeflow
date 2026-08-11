@@ -341,10 +341,6 @@ func (s *Stream) validate(name string, add func(string, ...any)) {
 	if s.Batch.MaxBytes == 0 {
 		add("%s.batch.max_bytes must be above zero", path)
 	}
-	if s.Batch.MaxRows > 0 && s.Batch.MaxBytes > 0 && s.Snapshot.ChunkSize > s.Batch.MaxRows*100 {
-		add("%s.snapshot.chunk_size (%d) is far larger than batch.max_rows (%d); a chunk is split into batches, so this only inflates memory",
-			path, s.Snapshot.ChunkSize, s.Batch.MaxRows)
-	}
 	if s.Sink.Workers < 1 {
 		add("%s.sink.workers must be at least 1", path)
 	}
