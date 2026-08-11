@@ -33,6 +33,10 @@ CREATE TABLE IF NOT EXISTS `orders` (
     `placed_at`      DATETIME(3) NULL,
     `updated_at`     TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     `internal_note`  TEXT NULL,
+    -- A real generated column. It never appears in a binlog row image, unlike
+    -- `updated_at`, which MySQL also reports as "DEFAULT_GENERATED" but does
+    -- replicate.
+    `total_with_tax` DECIMAL(18,2) AS (`total_amount` * 1.09) STORED,
     PRIMARY KEY (`id`),
     KEY `idx_user` (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
