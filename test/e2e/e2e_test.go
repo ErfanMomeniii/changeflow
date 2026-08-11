@@ -12,7 +12,9 @@ package e2e
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -62,8 +64,10 @@ func setup(t *testing.T) *env {
 		mysqlDSN: envOr("CHANGEFLOW_E2E_MYSQL_DSN", defaultMySQLDSN),
 		metaDSN:  envOr("CHANGEFLOW_E2E_META_DSN", defaultMetaDSN),
 		// A per-test index and stream keep runs independent, so one failure does not
-		// leave state that breaks the next.
-		index:  fmt.Sprintf("orders_%s", strings.ToLower(sanitize(t.Name()))),
+		// leave state that breaks the next. The name is a digest rather than the test
+		// name: stream names are capped at 48 characters by the checkpoint column, and
+		// some of these test names are longer than that on their own.
+		index:  "orders_e2e_" + shortHash(t.Name()),
 		dlqDir: t.TempDir(),
 	}
 
@@ -99,16 +103,11 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-func sanitize(name string) string {
-	out := make([]rune, 0, len(name))
-	for _, r := range name {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
-			out = append(out, r)
-		} else {
-			out = append(out, '_')
-		}
-	}
-	return string(out)
+// shortHash gives a stable, lowercase, bounded name for a test. Elasticsearch
+// requires lowercase index names, and changeflow bounds stream names.
+func shortHash(name string) string {
+	sum := sha256.Sum256([]byte(name))
+	return hex.EncodeToString(sum[:6])
 }
 
 func tableFor(string) string { return "changeflow_meta.changeflow_checkpoints" }
