@@ -1,5 +1,8 @@
 DEV_DSN ?= cdc:cdc@tcp(127.0.0.1:13306)/
 DEV_META_DSN ?= cdc:cdc@tcp(127.0.0.1:13306)/changeflow_meta?parseTime=true
+DEV_SHOP_DSN ?= cdc:cdc@tcp(127.0.0.1:13306)/shop?parseTime=true
+# Mutations run as a user permitted to write; the replication user must not be.
+DEV_WRITE_DSN ?= root:root@tcp(127.0.0.1:13306)/shop?parseTime=true
 COMPOSE := docker compose -f deploy/dev/docker-compose.yml
 
 .PHONY: help build test test-integration test-e2e vet check check-all dev-up dev-sinks dev-down dev-logs dev-mysql dev-es dev-ch preflight tail
@@ -14,7 +17,10 @@ test: ## Run unit tests
 	go test ./... -count=1
 
 test-integration: ## Run tests that need the dev containers running
-	CHANGEFLOW_TEST_DSN="$(DEV_META_DSN)" go test ./... -count=1
+	CHANGEFLOW_TEST_DSN="$(DEV_SHOP_DSN)" \
+	CHANGEFLOW_TEST_META_DSN="$(DEV_META_DSN)" \
+	CHANGEFLOW_TEST_WRITE_DSN="$(DEV_WRITE_DSN)" \
+	go test ./... -count=1
 
 test-e2e: ## Run end-to-end tests against MySQL and Elasticsearch (needs make dev-sinks)
 	CHANGEFLOW_E2E=1 \

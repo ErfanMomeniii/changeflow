@@ -68,14 +68,9 @@ jobs:
       - name: run integration tests
         env:
           CHANGEFLOW_TEST_DSN: cdc:cdc@tcp(127.0.0.1:13306)/shop?parseTime=true
+          CHANGEFLOW_TEST_META_DSN: cdc:cdc@tcp(127.0.0.1:13306)/changeflow_meta?parseTime=true
           CHANGEFLOW_TEST_WRITE_DSN: root:root@tcp(127.0.0.1:13306)/shop?parseTime=true
         run: go test ./... -count=1
-
-      - name: run checkpoint store tests
-        env:
-          # The checkpoint store lives in its own database with its own grants.
-          CHANGEFLOW_TEST_DSN: cdc:cdc@tcp(127.0.0.1:13306)/changeflow_meta?parseTime=true
-        run: go test ./internal/checkpoint/ -count=1
 
       - name: mysql logs on failure
         if: failure()

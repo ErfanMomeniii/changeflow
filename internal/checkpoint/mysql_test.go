@@ -15,9 +15,13 @@ import (
 func testStore(t *testing.T) (*MySQLStore, *sql.DB) {
 	t.Helper()
 
-	dsn := os.Getenv("CHANGEFLOW_TEST_DSN")
+	// A distinct variable from the source database: the checkpoint store lives in
+	// its own schema with its own grants, and these tests create and drop tables in
+	// it. Sharing one variable would point them at a database where that is rightly
+	// forbidden.
+	dsn := os.Getenv("CHANGEFLOW_TEST_META_DSN")
 	if dsn == "" {
-		t.Skip("set CHANGEFLOW_TEST_DSN to run checkpoint store tests against MySQL")
+		t.Skip("set CHANGEFLOW_TEST_META_DSN to run checkpoint store tests against MySQL")
 	}
 
 	db, err := sql.Open("mysql", dsn)
