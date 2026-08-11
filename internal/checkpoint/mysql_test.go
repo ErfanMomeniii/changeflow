@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -64,6 +65,50 @@ func sanitizeForTable(name string) string {
 		}
 	}
 	return string(out)
+}
+
+// The driver returns a TIMESTAMP as time.Time or as raw bytes depending on the
+// DSN's parseTime parameter. Depending on one spelling made every checkpoint load
+// fail against a connection string written the obvious way.
+func TestMySQLStoreReadsTimestampsWithoutParseTime(t *testing.T) {
+	dsn := os.Getenv("CHANGEFLOW_TEST_META_DSN")
+	if dsn == "" {
+		t.Skip("set CHANGEFLOW_TEST_META_DSN to run checkpoint store tests against MySQL")
+	}
+	// Strip the parameter if the environment happened to supply it.
+	if i := strings.IndexByte(dsn, '?'); i >= 0 {
+		dsn = dsn[:i]
+	}
+
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+
+	table := "cp_test_" + sanitizeForTable(t.Name())
+	store, err := NewMySQLStore(db, table)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	if err := store.EnsureSchema(t.Context()); err != nil {
+		t.Fatalf("ensure schema: %v", err)
+	}
+	t.Cleanup(func() { db.Exec("DROP TABLE IF EXISTS " + table) })
+
+	if err := store.Save(t.Context(), Checkpoint{Stream: "s", GTIDSet: "uuid:1-5"}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	cp, err := store.Load(t.Context(), "s")
+	if err != nil {
+		t.Fatalf("load without parseTime: %v", err)
+	}
+	if cp.UpdatedAt.IsZero() {
+		t.Error("updated_at was not parsed from the driver's byte form")
+	}
+	if cp.GTIDSet != "uuid:1-5" {
+		t.Errorf("gtid = %q", cp.GTIDSet)
+	}
 }
 
 func TestMySQLStoreEnsureSchemaIsRepeatable(t *testing.T) {

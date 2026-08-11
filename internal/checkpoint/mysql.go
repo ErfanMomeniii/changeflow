@@ -117,7 +117,7 @@ func (s *MySQLStore) Load(ctx context.Context, stream string) (Checkpoint, error
 
 	var (
 		cp        Checkpoint
-		updatedAt sql.NullTime
+		updatedAt any
 	)
 	err := s.db.QueryRowContext(ctx, q, stream).Scan(
 		&cp.Stream, &cp.GTIDSet, &cp.SnapshotDone, &cp.SnapshotStartGTID,
@@ -134,8 +134,10 @@ func (s *MySQLStore) Load(ctx context.Context, stream string) (Checkpoint, error
 		}
 		return Checkpoint{}, fmt.Errorf("checkpoint: load %s: %w", stream, err)
 	}
-	if updatedAt.Valid {
-		cp.UpdatedAt = updatedAt.Time
+	if ts, err := parseTimestamp(updatedAt); err != nil {
+		return Checkpoint{}, fmt.Errorf("checkpoint: stream %s has an unreadable updated_at: %w", stream, err)
+	} else {
+		cp.UpdatedAt = ts
 	}
 
 	// A row written by a newer changeflow may use fields this build does not know
@@ -144,6 +146,38 @@ func (s *MySQLStore) Load(ctx context.Context, stream string) (Checkpoint, error
 		return Checkpoint{}, fmt.Errorf("checkpoint: stream %s was written with schema version %d, this build understands %d", stream, cp.SchemaVersion, SchemaVersion)
 	}
 	return cp, nil
+}
+
+// parseTimestamp accepts either form the driver may produce for a TIMESTAMP.
+func parseTimestamp(v any) (time.Time, error) {
+	switch x := v.(type) {
+	case nil:
+		return time.Time{}, nil
+	case time.Time:
+		return x, nil
+	case []byte:
+		return parseTimestampText(string(x))
+	case string:
+		return parseTimestampText(x)
+	default:
+		return time.Time{}, fmt.Errorf("unexpected type %T", v)
+	}
+}
+
+func parseTimestampText(s string) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	if s == "" || strings.HasPrefix(s, "0000-00-00") {
+		return time.Time{}, nil
+	}
+	for _, layout := range []string{
+		"2006-01-02 15:04:05.999999",
+		"2006-01-02 15:04:05",
+	} {
+		if t, err := time.ParseInLocation(layout, s, time.UTC); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("cannot parse %q as a timestamp", s)
 }
 
 // Save writes the checkpoint, inserting it when absent. The upsert is a single
