@@ -188,6 +188,10 @@ jobs:
         if: ${{ !cancelled() }}
         run: go test ./test/e2e/ -count=1 -v -timeout 8m -run TestClickHouseConvergesAfterAnAbruptKill
 
+      - name: "e2e: a rebuild fills a new index and moves readers"
+        if: ${{ !cancelled() }}
+        run: go test ./test/e2e/ -count=1 -v -timeout 10m -run TestRebuildFillsANewIndexAndMovesReaders
+
       - name: service logs on failure
         if: failure()
         run: |

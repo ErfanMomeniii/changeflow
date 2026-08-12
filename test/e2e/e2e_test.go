@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -56,8 +57,12 @@ type env struct {
 	metaDSN  string
 	mysqlDSN string
 	chDSN    string
-	// indexCreated records whether this test created an index, so teardown touches
-	// only what was used and a restart does not wipe it.
+	// writeIndex is the concrete index documents go to, which a rebuild changes.
+	writeIndex string
+	// alias is what readers query, and what a completed scan is promoted to.
+	alias string
+	// created records the indices this test made, so teardown removes them all.
+	created      []string
 	indexCreated bool
 }
 
@@ -92,6 +97,9 @@ func setup(t *testing.T) *env {
 	}
 	e.db = db
 
+	e.writeIndex = e.index
+	e.alias = e.index + "_read"
+
 	e.binary = buildBinary(t)
 	// The configuration comes first: a generated schema is derived from it.
 	e.config = e.writeConfig()
@@ -99,8 +107,8 @@ func setup(t *testing.T) *env {
 	t.Cleanup(func() {
 		// Only the destination this test actually used needs tidying, so a test for one
 		// does not fail on the absence of the other.
-		if e.indexCreated {
-			e.deleteIndex()
+		for _, index := range e.created {
+			e.esRequest(http.MethodDelete, "/"+index, "")
 		}
 		e.exec("DELETE FROM orders WHERE id >= 20000")
 		if _, err := db.Exec("DELETE FROM "+tableFor(e.metaDSN)+" WHERE stream = ?", e.streamName()); err != nil {
@@ -215,11 +223,12 @@ func (e *env) createIndex() {
 		e.t.Fatalf("generate schema: %v", err)
 	}
 
-	e.deleteIndex()
-	status, payload := e.esRequest(http.MethodPut, "/"+e.index, string(mapping))
+	e.esRequest(http.MethodDelete, "/"+e.writeIndex, "")
+	status, payload := e.esRequest(http.MethodPut, "/"+e.writeIndex, string(mapping))
 	if status >= 300 {
 		e.t.Fatalf("create index: status %d: %s\nmapping was:\n%s", status, payload, mapping)
 	}
+	e.created = append(e.created, e.writeIndex)
 }
 
 // createIndexManually installs a hand-written mapping for the one test that needs an
@@ -256,7 +265,7 @@ func (e *env) createIndexManually() {
 }
 
 func (e *env) deleteIndex() {
-	e.esRequest(http.MethodDelete, "/"+e.index, "")
+	e.esRequest(http.MethodDelete, "/"+e.writeIndex, "")
 }
 
 func (e *env) writeConfig() string {
@@ -309,11 +318,12 @@ streams:
       type: elasticsearch
       addresses: [%q]
       index: %s
+      alias: %s
       workers: 2
     mapping:
       key: [id]
       exclude: [internal_note]
-`, e.mysqlDSN, 7000+time.Now().UnixNano()%900, e.metaDSN, e.streamName(), snapshot, e.esURL, e.index)
+`, e.mysqlDSN, 7000+time.Now().UnixNano()%900, e.metaDSN, e.streamName(), snapshot, e.esURL, e.writeIndex, e.alias)
 
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		e.t.Fatalf("write config: %v", err)
@@ -492,7 +502,7 @@ func (e *env) esRequest(method, path, body string) (int, string) {
 func (e *env) document(id string) (map[string]any, bool) {
 	e.t.Helper()
 
-	status, payload := e.esRequest(http.MethodGet, "/"+e.index+"/_doc/"+id, "")
+	status, payload := e.esRequest(http.MethodGet, "/"+e.writeIndex+"/_doc/"+id, "")
 	if status == http.StatusNotFound {
 		return nil, false
 	}
@@ -545,7 +555,7 @@ func (e *env) processLog() string {
 }
 
 func (e *env) refresh() {
-	e.esRequest(http.MethodPost, "/"+e.index+"/_refresh", "")
+	e.esRequest(http.MethodPost, "/"+e.writeIndex+"/_refresh", "")
 }
 
 func (e *env) waitForDocument(id string) map[string]any {
@@ -564,7 +574,7 @@ func (e *env) countDocuments() int {
 	e.t.Helper()
 
 	e.refresh()
-	status, payload := e.esRequest(http.MethodGet, "/"+e.index+"/_count", "")
+	status, payload := e.esRequest(http.MethodGet, "/"+e.writeIndex+"/_count", "")
 	if status >= 300 {
 		e.t.Fatalf("count: status %d: %s", status, payload)
 	}
@@ -581,7 +591,7 @@ func (e *env) documentIDs() []string {
 	e.t.Helper()
 
 	e.refresh()
-	status, payload := e.esRequest(http.MethodGet, "/"+e.index+"/_search?size=200&_source=false&sort=_doc", "")
+	status, payload := e.esRequest(http.MethodGet, "/"+e.writeIndex+"/_search?size=200&_source=false&sort=_doc", "")
 	if status >= 300 {
 		e.t.Fatalf("search: status %d: %s", status, payload)
 	}
@@ -611,7 +621,7 @@ func (e *env) countInRange(from, to uint64) int {
 
 	e.refresh()
 	query := fmt.Sprintf(`{"query":{"range":{"id":{"gte":%d,"lte":%d}}}}`, from, to)
-	status, payload := e.esRequest(http.MethodPost, "/"+e.index+"/_count", query)
+	status, payload := e.esRequest(http.MethodPost, "/"+e.writeIndex+"/_count", query)
 	if status >= 300 {
 		e.t.Fatalf("count in range: status %d: %s", status, payload)
 	}
@@ -1100,5 +1110,117 @@ func TestClickHouseConvergesAfterAnAbruptKill(t *testing.T) {
 	e.startClickHouse(false)
 	e.waitFor("every row to converge after the restart", func() bool {
 		return e.chCount(fmt.Sprintf("id BETWEEN %d AND %d", firstID, firstID+rows-1)) == rows
+	})
+}
+
+// countViaAlias counts documents through the read alias, which is what an application
+// queries and therefore what a rebuild must keep correct.
+func (e *env) countViaAlias(from, to uint64) int {
+	e.t.Helper()
+
+	e.esRequest(http.MethodPost, "/"+e.alias+"/_refresh", "")
+	query := fmt.Sprintf(`{"query":{"range":{"id":{"gte":%d,"lte":%d}}}}`, from, to)
+	status, payload := e.esRequest(http.MethodPost, "/"+e.alias+"/_count", query)
+	if status >= 300 {
+		e.t.Fatalf("count via alias: status %d: %s", status, payload)
+	}
+
+	var result struct{ Count int }
+	if err := json.Unmarshal([]byte(payload), &result); err != nil {
+		e.t.Fatalf("decode count: %v", err)
+	}
+	return result.Count
+}
+
+// aliasTargets reports which indices the read alias resolves to.
+func (e *env) aliasTargets() []string {
+	e.t.Helper()
+
+	status, payload := e.esRequest(http.MethodGet, "/_alias/"+e.alias, "")
+	if status == http.StatusNotFound {
+		return nil
+	}
+	if status >= 300 {
+		e.t.Fatalf("read alias: status %d: %s", status, payload)
+	}
+
+	var byIndex map[string]any
+	if err := json.Unmarshal([]byte(payload), &byIndex); err != nil {
+		e.t.Fatalf("decode alias: %v", err)
+	}
+	targets := make([]string, 0, len(byIndex))
+	for index := range byIndex {
+		targets = append(targets, index)
+	}
+	sort.Strings(targets)
+	return targets
+}
+
+// resnapshot asks the stream to scan its table again.
+func (e *env) resnapshot() {
+	e.t.Helper()
+
+	out, err := exec.CommandContext(context.Background(), e.binary,
+		"resnapshot", "-c", e.config, "--stream", e.streamName(), "--confirm").CombinedOutput()
+	if err != nil {
+		e.t.Fatalf("resnapshot: %v\n%s", err, out)
+	}
+}
+
+// A mapping change is applied by filling a new index and moving readers to it. Readers
+// must see a complete table throughout: never a partly built one, and never nothing.
+func TestRebuildFillsANewIndexAndMovesReaders(t *testing.T) {
+	e := setup(t)
+
+	const firstID = 27000
+	const rows = 40
+	for i := 0; i < rows; i++ {
+		e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (?,7,'paid',1.00)", firstID+i)
+	}
+
+	// First pass: fill the original index by scanning, and promote the alias to it.
+	first := e.startWithSnapshot()
+	e.waitFor("the original index to be filled", func() bool {
+		return e.countInRange(firstID, firstID+rows-1) == rows
+	})
+	e.waitFor("readers to be pointed at the original index", func() bool {
+		targets := e.aliasTargets()
+		return len(targets) == 1 && targets[0] == e.index
+	})
+	originalIndex := e.writeIndex
+	first.stop()
+
+	// A rebuild: a new index, a rescan, and the same alias.
+	e.resnapshot()
+	e.writeIndex = e.index + "_v2"
+	e.config = e.writeConfigWith(true)
+	e.createIndex()
+
+	e.launch()
+
+	e.waitFor("the new index to be filled", func() bool {
+		return e.countInRange(firstID, firstID+rows-1) == rows
+	})
+	e.waitFor("readers to be moved to the new index", func() bool {
+		targets := e.aliasTargets()
+		return len(targets) == 1 && targets[0] == e.writeIndex
+	})
+
+	// Readers see the whole table through the alias, not a partial copy.
+	if got := e.countViaAlias(firstID, firstID+rows-1); got != rows {
+		t.Errorf("readers see %d of %d rows through the alias", got, rows)
+	}
+
+	// The previous index is still there, which is what makes the change reversible.
+	status, _ := e.esRequest(http.MethodGet, "/"+originalIndex, "")
+	if status >= 300 {
+		t.Errorf("the previous index was removed, leaving nothing to roll back to (status %d)", status)
+	}
+
+	// Changes made after the rebuild reach the new index.
+	e.exec("UPDATE orders SET status='shipped' WHERE id=?", firstID)
+	e.waitFor("a change after the rebuild to be applied", func() bool {
+		doc, found := e.document(fmt.Sprint(firstID))
+		return found && doc["status"] == "shipped"
 	})
 }
