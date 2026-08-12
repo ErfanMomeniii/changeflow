@@ -17,6 +17,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -214,21 +215,26 @@ func (e *env) requireElasticsearch() {
 
 func (e *env) createIndex() {
 	e.t.Helper()
+	e.createIndexFor(e.streamName(), e.writeIndex)
+}
+
+func (e *env) createIndexFor(stream, index string) {
+	e.t.Helper()
 
 	cmd := exec.Command(e.binary, "generate-schema",
-		"-c", e.config, "--stream", e.streamName(), "--replicas", "0")
+		"-c", e.config, "--stream", stream, "--replicas", "0")
 	cmd.Dir = repoRoot(e.t)
 	mapping, err := cmd.Output()
 	if err != nil {
 		e.t.Fatalf("generate schema: %v", err)
 	}
 
-	e.esRequest(http.MethodDelete, "/"+e.writeIndex, "")
-	status, payload := e.esRequest(http.MethodPut, "/"+e.writeIndex, string(mapping))
+	e.esRequest(http.MethodDelete, "/"+index, "")
+	status, payload := e.esRequest(http.MethodPut, "/"+index, string(mapping))
 	if status >= 300 {
 		e.t.Fatalf("create index: status %d: %s\nmapping was:\n%s", status, payload, mapping)
 	}
-	e.created = append(e.created, e.writeIndex)
+	e.created = append(e.created, index)
 }
 
 // createIndexManually installs a hand-written mapping for the one test that needs an
@@ -370,6 +376,106 @@ streams:
 	return path
 }
 
+// secondStreamName is another stream over the same table, which is what makes one
+// reader fan out rather than feed a single pipeline.
+func (e *env) secondStreamName() string { return e.index + "_b" }
+
+// writeFanoutConfig declares two streams over one table, each with its own index,
+// mapping, and position.
+func (e *env) writeFanoutConfig() string {
+	e.t.Helper()
+
+	path := filepath.Join(e.t.TempDir(), "changeflow-fanout.yaml")
+	body := fmt.Sprintf(`
+source:
+  dsn: %q
+  server_id: %d
+checkpoint:
+  dsn: %q
+runtime:
+  buffer_size: 256
+  metrics_addr: "off"
+streams:
+  %s:
+    table: shop.orders
+    snapshot:
+      enabled: false
+    batch:
+      max_rows: 50
+      flush_interval: 250ms
+    sink:
+      type: elasticsearch
+      addresses: [%q]
+      index: %s
+      workers: 2
+    mapping:
+      key: [id]
+      exclude: [internal_note]
+  %s:
+    table: shop.orders
+    snapshot:
+      enabled: false
+    batch:
+      max_rows: 50
+      flush_interval: 250ms
+    sink:
+      type: elasticsearch
+      addresses: [%q]
+      index: %s
+      workers: 1
+    mapping:
+      key: [id]
+      exclude: [internal_note, note_latin1]
+`,
+		e.mysqlDSN, 7000+time.Now().UnixNano()%900, e.metaDSN,
+		e.streamName(), e.esURL, e.writeIndex,
+		e.secondStreamName(), e.esURL, e.secondStreamName())
+
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		e.t.Fatalf("write config: %v", err)
+	}
+	return path
+}
+
+// dumpThreads counts the replication connections the source is serving, which is how
+// a shared reader is told apart from one connection per stream.
+func (e *env) dumpThreads() int {
+	e.t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var count int
+	err := e.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM information_schema.processlist WHERE command LIKE 'Binlog Dump%'`,
+	).Scan(&count)
+	if err != nil {
+		e.t.Fatalf("count dump threads: %v", err)
+	}
+	return count
+}
+
+// checkpointPosition returns the recorded position for a stream, or the empty string
+// when the stream has never checkpointed.
+func (e *env) checkpointPosition(stream string) string {
+	e.t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var gtid string
+	err := e.db.QueryRowContext(ctx,
+		"SELECT gtid_set FROM "+tableFor(e.metaDSN)+" WHERE stream = ?", stream,
+	).Scan(&gtid)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ""
+	}
+	if err != nil {
+		e.t.Fatalf("read checkpoint for %s: %v", stream, err)
+	}
+	return gtid
+}
+
 // process is a running changeflow.
 type process struct {
 	cmd *exec.Cmd
@@ -396,12 +502,27 @@ func (e *env) start() *process {
 // not create an index it will never use.
 func (e *env) launch() *process {
 	e.t.Helper()
+	return e.launchStream(e.streamName())
+}
+
+// launchAll starts every stream in the configuration, which is the normal deployment:
+// one process reading the source once for all of them.
+func (e *env) launchAll() *process {
+	e.t.Helper()
+	return e.launchStream("")
+}
+
+// launchStream starts the process, naming one stream or, given an empty name, all of them.
+func (e *env) launchStream(stream string) *process {
+	e.t.Helper()
+
+	args := []string{"run", "-c", e.config, "--dlq-dir", e.dlqDir}
+	if stream != "" {
+		args = append(args, "--stream", stream)
+	}
 
 	log := &bytes.Buffer{}
-	cmd := exec.Command(e.binary, "run",
-		"-c", e.config,
-		"--stream", e.streamName(),
-		"--dlq-dir", e.dlqDir)
+	cmd := exec.Command(e.binary, args...)
 	cmd.Stdout, cmd.Stderr = log, log
 	// A process group lets the test kill the whole thing outright.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -501,8 +622,13 @@ func (e *env) esRequest(method, path, body string) (int, string) {
 // document fetches one document, reporting whether it exists.
 func (e *env) document(id string) (map[string]any, bool) {
 	e.t.Helper()
+	return e.documentIn(e.writeIndex, id)
+}
 
-	status, payload := e.esRequest(http.MethodGet, "/"+e.writeIndex+"/_doc/"+id, "")
+func (e *env) documentIn(index, id string) (map[string]any, bool) {
+	e.t.Helper()
+
+	status, payload := e.esRequest(http.MethodGet, "/"+index+"/_doc/"+id, "")
 	if status == http.StatusNotFound {
 		return nil, false
 	}
@@ -555,7 +681,11 @@ func (e *env) processLog() string {
 }
 
 func (e *env) refresh() {
-	e.esRequest(http.MethodPost, "/"+e.writeIndex+"/_refresh", "")
+	e.refreshIndex(e.writeIndex)
+}
+
+func (e *env) refreshIndex(index string) {
+	e.esRequest(http.MethodPost, "/"+index+"/_refresh", "")
 }
 
 func (e *env) waitForDocument(id string) map[string]any {
@@ -703,6 +833,70 @@ func TestKeyChangeRemovesTheOldDocument(t *testing.T) {
 		_, newFound := e.document("20021")
 		return newFound && !oldFound
 	})
+}
+
+// Two streams over one table must each receive every change, from a single connection
+// to the source. Ten streams reading the same binlog separately would cost the master
+// ten dump threads and ten copies of the same data.
+func TestOneConnectionServesTwoStreams(t *testing.T) {
+	e := setup(t)
+	e.requireElasticsearch()
+
+	second := e.secondStreamName()
+	e.config = e.writeFanoutConfig()
+	e.createIndexFor(e.streamName(), e.writeIndex)
+	e.createIndexFor(second, second)
+	t.Cleanup(func() {
+		if _, err := e.db.Exec("DELETE FROM "+tableFor(e.metaDSN)+" WHERE stream = ?", second); err != nil {
+			t.Logf("could not clear the checkpoint for %s: %v", second, err)
+		}
+	})
+
+	p := e.launchAll()
+
+	e.exec(`INSERT INTO orders (id,user_id,status,total_amount,note_latin1)
+	        VALUES (20300,7,'paid',3.50,'café')`)
+	e.exec("UPDATE orders SET status='shipped' WHERE id=20300")
+	e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (20301,7,'draft',1.00)")
+	e.exec("DELETE FROM orders WHERE id=20301")
+
+	for _, index := range []string{e.writeIndex, second} {
+		e.waitFor("both changes to reach "+index, func() bool {
+			e.refreshIndex(index)
+			doc, found := e.documentIn(index, "20300")
+			if !found || doc["status"] != "shipped" {
+				return false
+			}
+			_, deletedStillPresent := e.documentIn(index, "20301")
+			return !deletedStillPresent
+		})
+	}
+
+	// Each stream applies its own mapping to the same event.
+	if doc, _ := e.documentIn(e.writeIndex, "20300"); doc["note_latin1"] != "café" {
+		t.Errorf("note_latin1 = %v in %s, want the column the first stream includes", doc["note_latin1"], e.writeIndex)
+	}
+	if doc, _ := e.documentIn(second, "20300"); doc["note_latin1"] != nil {
+		t.Errorf("note_latin1 = %v in %s, want it absent: the second stream excludes it", doc["note_latin1"], second)
+	}
+
+	// A connection closed by an earlier scenario can still be listed for a moment, so
+	// this waits for the count to settle rather than reading it once.
+	e.waitFor("the source to be serving exactly one replication connection", func() bool {
+		return e.dumpThreads() == 1
+	})
+	if got := strings.Count(p.log.String(), "replication started"); got != 1 {
+		t.Errorf("replication was started %d times, want once\nlog:\n%s", got, e.processLog())
+	}
+
+	// Positions are per stream, so one falling behind or being run alone later does not
+	// move the other.
+	p.stop()
+	for _, stream := range []string{e.streamName(), second} {
+		if e.checkpointPosition(stream) == "" {
+			t.Errorf("stream %s recorded no position", stream)
+		}
+	}
 }
 
 // The design's central claim: a crash between writing to the destination and

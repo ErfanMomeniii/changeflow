@@ -190,6 +190,10 @@ jobs:
         if: ${{ !cancelled() }}
         run: go test ./test/e2e/ -count=1 -v -timeout 5m -run TestKeyChangeRemovesTheOldDocument
 
+      - name: "e2e: one connection serves two streams"
+        if: ${{ !cancelled() }}
+        run: go test ./test/e2e/ -count=1 -v -timeout 5m -run TestOneConnectionServesTwoStreams
+
       - name: "e2e: converges after an abrupt kill"
         if: ${{ !cancelled() }}
         run: go test ./test/e2e/ -count=1 -v -timeout 8m -run TestConvergesAfterAnAbruptKill
