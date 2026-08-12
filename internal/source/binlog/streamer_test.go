@@ -455,6 +455,83 @@ collect:
 	}
 }
 
+// Replaying history across a schema change is normal, and a row written before a
+// column was dropped must still decode: refusing would leave the stream permanently
+// stuck at that position.
+func TestRowsWrittenBeforeAColumnWasDroppedStillDecode(t *testing.T) {
+	h := newLiveHarnessForIDs(t, idRange{9900, 9999}, "shop.orders")
+
+	t.Cleanup(func() {
+		h.writer.Exec("ALTER TABLE orders DROP COLUMN scratch")
+		h.writer.Exec("DELETE FROM orders WHERE id BETWEEN 9900 AND 9999")
+	})
+
+	// A row written while the extra column exists, then the column removed. The event
+	// is now wider than the table.
+	h.exec(t, "ALTER TABLE orders ADD COLUMN scratch VARCHAR(16) NULL")
+	h.exec(t, "INSERT INTO orders (id,user_id,status,total_amount,scratch) VALUES (9900,5,'paid',1.00,'x')")
+	h.exec(t, "ALTER TABLE orders DROP COLUMN scratch")
+
+	ev := h.next(t)
+
+	if ev.Op != cdc.OpInsert {
+		t.Fatalf("op = %s, want insert", ev.Op)
+	}
+	// The row is laid out by the current definition, so the transform can index it.
+	if len(ev.After) != len(ev.Meta.Columns) {
+		t.Fatalf("row has %d values against %d columns", len(ev.After), len(ev.Meta.Columns))
+	}
+	// Values must land on the right columns, not be shifted by the removed one.
+	for _, tc := range []struct {
+		column string
+		want   any
+	}{
+		{"id", uint64(9900)},
+		{"user_id", uint64(5)},
+	} {
+		c, ok := ev.Meta.Column(tc.column)
+		if !ok {
+			t.Fatalf("column %s missing", tc.column)
+		}
+		if got := ev.After[c.Position]; got != tc.want {
+			t.Errorf("%s = %#v, want %#v", tc.column, got, tc.want)
+		}
+	}
+}
+
+// A column added after a row was written has no value in it, so it decodes as null
+// rather than shifting every later value along by one.
+func TestRowsWrittenBeforeAColumnWasAddedStillDecode(t *testing.T) {
+	h := newLiveHarnessForIDs(t, idRange{9800, 9899}, "shop.orders")
+
+	t.Cleanup(func() {
+		h.writer.Exec("ALTER TABLE orders DROP COLUMN added_later")
+		h.writer.Exec("DELETE FROM orders WHERE id BETWEEN 9800 AND 9899")
+	})
+
+	h.exec(t, "INSERT INTO orders (id,user_id,status,total_amount) VALUES (9800,5,'paid',1.00)")
+	h.exec(t, "ALTER TABLE orders ADD COLUMN added_later VARCHAR(16) NULL")
+	// A second write, so the reader has a reason to reload the definition.
+	h.exec(t, "INSERT INTO orders (id,user_id,status,total_amount) VALUES (9801,5,'paid',1.00)")
+
+	first := h.next(t)
+	if len(first.After) != len(first.Meta.Columns) {
+		t.Fatalf("row has %d values against %d columns", len(first.After), len(first.Meta.Columns))
+	}
+	c, ok := first.Meta.Column("id")
+	if !ok {
+		t.Fatal("id column missing")
+	}
+	if got := first.After[c.Position]; got != uint64(9800) {
+		t.Errorf("id = %#v, want 9800; values may have shifted", got)
+	}
+
+	second := h.next(t)
+	if got := second.After[c.Position]; got != uint64(9801) {
+		t.Errorf("id = %#v, want 9801", got)
+	}
+}
+
 func TestNewRejectsIncompleteOptions(t *testing.T) {
 	store := schema.NewStore(schema.DBLoader{})
 	valid := Options{

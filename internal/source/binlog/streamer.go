@@ -261,19 +261,14 @@ func (s *Streamer) emitRows(ctx context.Context, raw *replication.BinlogEvent, e
 		return fmt.Errorf("binlog: %w", err)
 	}
 
-	// A row narrower than the definition means the definition is stale, most likely
-	// because DDL arrived without a statement we recognised. Reload once before
-	// giving up, rather than decoding values against the wrong columns.
-	if len(e.Rows) > 0 && len(e.Rows[0]) != len(meta.Columns) {
-		s.opts.Schemas.Invalidate(schemaName, table)
-		if meta, err = s.opts.Schemas.Table(ctx, schemaName, table); err != nil {
-			return fmt.Errorf("binlog: reload %s.%s after a row width mismatch: %w", schemaName, table, err)
-		}
-		if len(e.Rows[0]) != len(meta.Columns) {
-			return fmt.Errorf("binlog: %s.%s row carries %d values but the table defines %d columns; decoding would attribute values to the wrong fields",
-				schemaName, table, len(e.Rows[0]), len(meta.Columns))
-		}
+	// A row's width is the table's width when the row was written, which is not
+	// necessarily its width now. Replaying history across a DDL change is normal, so
+	// the values are aligned by column name rather than by position.
+	align, err := s.alignment(ctx, e, meta)
+	if err != nil {
+		return err
 	}
+	meta = align.meta
 
 	timestamp := time.Unix(int64(raw.Header.Timestamp), 0)
 	op, isUpdate, recognised := opFor(raw.Header.EventType)
@@ -295,7 +290,8 @@ func (s *Streamer) emitRows(ctx context.Context, raw *replication.BinlogEvent, e
 	if isUpdate {
 		// Update rows arrive as before/after pairs.
 		for i := 0; i+1 < len(e.Rows); i += 2 {
-			ev, err := s.build(ctx, meta, cdc.OpUpdate, e.Rows[i], e.Rows[i+1], timestamp, gtid)
+			ev, err := s.build(ctx, meta, cdc.OpUpdate,
+				align.row(e.Rows[i]), align.row(e.Rows[i+1]), timestamp, gtid)
 			if err != nil {
 				return err
 			}
@@ -309,9 +305,9 @@ func (s *Streamer) emitRows(ctx context.Context, raw *replication.BinlogEvent, e
 	for _, row := range e.Rows {
 		var before, after cdc.Row
 		if op == cdc.OpDelete {
-			before = cdc.Row(row)
+			before = align.row(row)
 		} else {
-			after = cdc.Row(row)
+			after = align.row(row)
 		}
 		ev, err := s.build(ctx, meta, op, before, after, timestamp, gtid)
 		if err != nil {
@@ -322,6 +318,106 @@ func (s *Streamer) emitRows(ctx context.Context, raw *replication.BinlogEvent, e
 		}
 	}
 	return nil
+}
+
+// alignment maps a row as the binlog wrote it onto the table as it is defined now.
+type alignment struct {
+	meta *schema.TableMeta
+	// positions maps each value in the event to a column position in meta, or -1 for a
+	// column the table no longer has.
+	positions []int
+	// direct marks the common case, where the event already matches the definition and
+	// no rearranging is needed.
+	direct bool
+}
+
+// row returns the values laid out by the current definition's positions.
+func (a alignment) row(values []any) cdc.Row {
+	if a.direct {
+		return cdc.Row(values)
+	}
+
+	out := make(cdc.Row, len(a.meta.Columns))
+	for i, v := range values {
+		if i >= len(a.positions) {
+			break
+		}
+		if pos := a.positions[i]; pos >= 0 {
+			out[pos] = v
+		}
+	}
+	return out
+}
+
+// alignment reconciles the event's shape with the table's current shape.
+//
+// A stale cached definition is reloaded first, since that is the likely cause. What
+// remains is genuine history: a row written before a column was added or dropped. Those
+// rows are aligned by name, because a column added in the middle of a table shifts every
+// position after it and decoding by position would attribute values to the wrong fields.
+func (s *Streamer) alignment(ctx context.Context, e *replication.RowsEvent, meta *schema.TableMeta) (alignment, error) {
+	if len(e.Rows) == 0 {
+		return alignment{meta: meta, direct: true}, nil
+	}
+
+	width := len(e.Rows[0])
+	if width == len(meta.Columns) {
+		return alignment{meta: meta, direct: true}, nil
+	}
+
+	schemaName, table := string(e.Table.Schema), string(e.Table.Table)
+
+	// Reload once: the cheapest explanation is a definition cached before a DDL
+	// statement we did not recognise.
+	s.opts.Schemas.Invalidate(schemaName, table)
+	reloaded, err := s.opts.Schemas.Table(ctx, schemaName, table)
+	if err != nil {
+		return alignment{}, fmt.Errorf("binlog: reload %s.%s after a row width mismatch: %w", schemaName, table, err)
+	}
+	if width == len(reloaded.Columns) {
+		return alignment{meta: reloaded, direct: true}, nil
+	}
+
+	// Still different, so this row predates a schema change. The event's own column
+	// names are the only reliable way to place its values.
+	names := e.Table.ColumnNameString()
+	if len(names) != width {
+		return alignment{}, fmt.Errorf("binlog: %s.%s row carries %d values while the table defines %d columns, and the binlog names only %d of them; set binlog_row_metadata=FULL so historical rows can be aligned by name",
+			schemaName, table, width, len(reloaded.Columns), len(names))
+	}
+
+	positions := make([]int, width)
+	var dropped, missing []string
+	for i, name := range names {
+		if c, ok := reloaded.Column(name); ok {
+			positions[i] = c.Position
+			continue
+		}
+		positions[i] = -1
+		dropped = append(dropped, name)
+	}
+
+	present := make(map[string]bool, len(names))
+	for _, n := range names {
+		present[strings.ToLower(n)] = true
+	}
+	for _, c := range reloaded.Columns {
+		if !present[strings.ToLower(c.Name)] {
+			missing = append(missing, c.Name)
+		}
+	}
+
+	// Worth saying plainly: a column added after these rows were written has no value
+	// in them, so it will be written as null. Only a fresh scan can supply the value
+	// the table holds now.
+	s.log.Warn("aligning rows written before a schema change",
+		"table", reloaded.Name(),
+		"row_columns", width,
+		"table_columns", len(reloaded.Columns),
+		"not_in_table", dropped,
+		"absent_from_row", missing)
+
+	return alignment{meta: reloaded, positions: positions}, nil
 }
 
 func (s *Streamer) build(ctx context.Context, meta *schema.TableMeta, op cdc.Op, before, after cdc.Row, ts time.Time, gtid string) (cdc.ChangeEvent, error) {
