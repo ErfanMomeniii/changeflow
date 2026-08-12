@@ -36,6 +36,7 @@ const (
 	defaultMySQLDSN = "root:root@tcp(127.0.0.1:13306)/shop"
 	defaultMetaDSN  = "root:root@tcp(127.0.0.1:13306)/changeflow_meta"
 	defaultESURL    = "http://127.0.0.1:19200"
+	defaultCHDSN    = "http://changeflow:changeflow@127.0.0.1:18123/?database=analytics"
 	// Elasticsearch is not searchable the instant a write is acknowledged, and a
 	// restart replays a batch, so assertions poll rather than assume.
 	settleTimeout = 45 * time.Second
@@ -54,6 +55,10 @@ type env struct {
 	dlqDir   string
 	metaDSN  string
 	mysqlDSN string
+	chDSN    string
+	// indexCreated records whether this test created an index, so teardown touches
+	// only what was used and a restart does not wipe it.
+	indexCreated bool
 }
 
 func setup(t *testing.T) *env {
@@ -68,6 +73,7 @@ func setup(t *testing.T) *env {
 		esURL:    envOr("CHANGEFLOW_E2E_ES_URL", defaultESURL),
 		mysqlDSN: envOr("CHANGEFLOW_E2E_MYSQL_DSN", defaultMySQLDSN),
 		metaDSN:  envOr("CHANGEFLOW_E2E_META_DSN", defaultMetaDSN),
+		chDSN:    envOr("CHANGEFLOW_E2E_CH_DSN", defaultCHDSN),
 		// A per-test index and stream keep runs independent, so one failure does not
 		// leave state that breaks the next. The name is a digest rather than the test
 		// name: stream names are capped at 48 characters by the checkpoint column, and
@@ -87,12 +93,15 @@ func setup(t *testing.T) *env {
 	e.db = db
 
 	e.binary = buildBinary(t)
-	// The configuration comes first: the mapping is generated from it.
+	// The configuration comes first: a generated schema is derived from it.
 	e.config = e.writeConfig()
-	e.createIndex()
 
 	t.Cleanup(func() {
-		e.deleteIndex()
+		// Only the destination this test actually used needs tidying, so a test for one
+		// does not fail on the absence of the other.
+		if e.indexCreated {
+			e.deleteIndex()
+		}
 		e.exec("DELETE FROM orders WHERE id >= 20000")
 		if _, err := db.Exec("DELETE FROM "+tableFor(e.metaDSN)+" WHERE stream = ?", e.streamName()); err != nil {
 			t.Logf("could not clear the checkpoint: %v", err)
@@ -159,6 +168,42 @@ func repoRoot(t *testing.T) string {
 // replication uses: a mapping that guesses `long` for an unsigned identifier would
 // wrap every value above 2^63. Applying it separately is also how it works in
 // production, where changeflow never issues DDL.
+// ensureIndex creates the index on first use.
+//
+// Idempotent because a test may start the process more than once, and recreating the
+// index between restarts would discard the documents the test is about to assert on.
+func (e *env) ensureIndex() {
+	e.t.Helper()
+
+	if e.indexCreated {
+		return
+	}
+	e.requireElasticsearch()
+	e.createIndex()
+	e.indexCreated = true
+}
+
+// requireElasticsearch skips when Elasticsearch is not reachable.
+func (e *env) requireElasticsearch() {
+	e.t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.esURL+"/_cluster/health", nil)
+	if err != nil {
+		e.t.Fatalf("build request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		e.t.Skipf("Elasticsearch is not reachable at %s: %v", e.esURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		e.t.Skipf("Elasticsearch returned %d", resp.StatusCode)
+	}
+}
+
 func (e *env) createIndex() {
 	e.t.Helper()
 
@@ -222,6 +267,23 @@ func (e *env) writeConfig() string {
 // writeConfigWith produces a configuration with or without the initial table scan.
 func (e *env) writeConfigWith(snapshot bool) string {
 	e.t.Helper()
+	return e.writeConfigFor(sinkElasticsearch, snapshot)
+}
+
+type sinkKind int
+
+const (
+	sinkElasticsearch sinkKind = iota
+	sinkClickHouse
+)
+
+// writeConfigFor produces a configuration for either destination.
+func (e *env) writeConfigFor(kind sinkKind, snapshot bool) string {
+	e.t.Helper()
+
+	if kind == sinkClickHouse {
+		return e.writeClickHouseConfig(snapshot)
+	}
 
 	path := filepath.Join(e.t.TempDir(), "changeflow.yaml")
 	body := fmt.Sprintf(`
@@ -232,6 +294,7 @@ checkpoint:
   dsn: %q
 runtime:
   buffer_size: 256
+  metrics_addr: "off"
 streams:
   %s:
     table: shop.orders
@@ -258,6 +321,45 @@ streams:
 	return path
 }
 
+func (e *env) writeClickHouseConfig(snapshot bool) string {
+	e.t.Helper()
+
+	path := filepath.Join(e.t.TempDir(), "changeflow-clickhouse.yaml")
+	body := fmt.Sprintf(`
+source:
+  dsn: %q
+  server_id: %d
+checkpoint:
+  dsn: %q
+runtime:
+  buffer_size: 256
+  metrics_addr: "off"
+streams:
+  %s:
+    table: shop.orders
+    snapshot:
+      enabled: %t
+      chunk_size: 20
+    batch:
+      max_rows: 50
+      max_bytes: 1MiB
+      flush_interval: 250ms
+    sink:
+      type: clickhouse
+      dsn: %q
+      table: %s
+      workers: 1
+    mapping:
+      key: [id]
+      exclude: [internal_note]
+`, e.mysqlDSN, 7500+time.Now().UnixNano()%400, e.metaDSN, e.streamName(), snapshot, e.chDSN, e.chTable())
+
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		e.t.Fatalf("write config: %v", err)
+	}
+	return path
+}
+
 // process is a running changeflow.
 type process struct {
 	cmd *exec.Cmd
@@ -268,11 +370,21 @@ type process struct {
 func (e *env) startWithSnapshot() *process {
 	e.t.Helper()
 	e.config = e.writeConfigWith(true)
-	return e.start()
+	e.ensureIndex()
+	return e.launch()
 }
 
-// start launches the binary. The returned process must be stopped by the caller.
+// start launches the binary against Elasticsearch. The returned process must be
+// stopped by the caller.
 func (e *env) start() *process {
+	e.t.Helper()
+	e.ensureIndex()
+	return e.launch()
+}
+
+// launch starts the process without assuming a destination, so a ClickHouse test does
+// not create an index it will never use.
+func (e *env) launch() *process {
 	e.t.Helper()
 
 	log := &bytes.Buffer{}
@@ -767,9 +879,11 @@ func TestStatusReportsProgress(t *testing.T) {
 // reject teaches nothing, because changeflow would never see it.
 func TestRefusedDocumentGoesToTheDeadLetterQueueAndStreamContinues(t *testing.T) {
 	e := setup(t)
-	// Replace the generated mapping with one whose user_id cannot hold large values.
+	// A deliberately unsuitable mapping, in place of the generated one.
+	e.requireElasticsearch()
 	e.deleteIndex()
 	e.createIndexManually()
+	e.indexCreated = true
 
 	e.start()
 
@@ -805,4 +919,186 @@ func TestRefusedDocumentGoesToTheDeadLetterQueueAndStreamContinues(t *testing.T)
 	if strings.Contains(recorded, "\"body\":") {
 		t.Errorf("the document body should not be recorded by default:\n%s", recorded)
 	}
+}
+
+// chTable is this test's destination table.
+func (e *env) chTable() string { return "analytics." + e.index }
+
+// clickhouse sends a statement over the HTTP interface and returns the response body.
+func (e *env) clickhouse(statement string) string {
+	e.t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.chDSN, strings.NewReader(statement))
+	if err != nil {
+		e.t.Fatalf("build request: %v", err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		e.t.Fatalf("clickhouse %q: %v", firstLine(statement), err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode >= 300 {
+		e.t.Fatalf("clickhouse %q: status %d: %s", firstLine(statement), resp.StatusCode, body)
+	}
+	return strings.TrimSpace(string(body))
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i] + "..."
+	}
+	return s
+}
+
+// createClickHouseTable applies the DDL the binary generates, so the destination schema
+// cannot drift from what replication sends.
+func (e *env) createClickHouseTable(config string) {
+	e.t.Helper()
+
+	cmd := exec.Command(e.binary, "generate-schema", "-c", config, "--stream", e.streamName())
+	cmd.Dir = repoRoot(e.t)
+	ddl, err := cmd.Output()
+	if err != nil {
+		e.t.Fatalf("generate schema: %v", err)
+	}
+
+	e.clickhouse("DROP TABLE IF EXISTS " + e.chTable())
+	e.clickhouse(string(ddl))
+	e.t.Cleanup(func() { e.clickhouse("DROP TABLE IF EXISTS " + e.chTable()) })
+}
+
+// requireClickHouse skips when ClickHouse is not reachable, so the Elasticsearch
+// scenarios can still run on their own.
+func (e *env) requireClickHouse() {
+	e.t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.chDSN, strings.NewReader("SELECT 1"))
+	if err != nil {
+		e.t.Fatalf("build request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		e.t.Skipf("ClickHouse is not reachable at %s: %v", e.chDSN, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		e.t.Skipf("ClickHouse returned %d: %s", resp.StatusCode, body)
+	}
+}
+
+// startClickHouse launches the binary against ClickHouse.
+func (e *env) startClickHouse(snapshot bool) *process {
+	e.t.Helper()
+	e.requireClickHouse()
+
+	e.config = e.writeConfigFor(sinkClickHouse, snapshot)
+	e.createClickHouseTable(e.config)
+	return e.launch()
+}
+
+// chCount counts rows through FINAL, which is how a reader must query a
+// ReplacingMergeTree until background merges have collapsed duplicate versions.
+func (e *env) chCount(where string) int {
+	e.t.Helper()
+
+	body := e.clickhouse(fmt.Sprintf(
+		"SELECT count() FROM %s FINAL WHERE _is_deleted = 0 AND %s", e.chTable(), where))
+	n, err := strconv.Atoi(body)
+	if err != nil {
+		e.t.Fatalf("count returned %q: %v", body, err)
+	}
+	return n
+}
+
+func (e *env) chValue(query string) string {
+	e.t.Helper()
+	return e.clickhouse(query)
+}
+
+func TestClickHouseReceivesInsertsUpdatesAndDeletes(t *testing.T) {
+	e := setup(t)
+	e.startClickHouse(false)
+
+	e.exec(`INSERT INTO orders (id,user_id,status,channels,total_amount,is_gift,placed_at)
+	        VALUES (26000, 18446744073709551001, 'paid', 'web,ios', 19.90, 1, '2026-08-11 10:00:00.000')`)
+
+	e.waitFor("the row to arrive", func() bool { return e.chCount("id = 26000") == 1 })
+
+	// The same value decisions as the other destination, checked against a real server:
+	// an exact decimal, an enum label, a set as an array, an unsigned identifier.
+	row := e.chValue(fmt.Sprintf(
+		"SELECT toString(user_id), status, toString(total_amount), arrayStringConcat(channels, ',') "+
+			"FROM %s FINAL WHERE id = 26000 FORMAT TSV", e.chTable()))
+	for _, want := range []string{"18446744073709551001", "paid", "19.90", "web,ios"} {
+		if !strings.Contains(row, want) {
+			t.Errorf("expected %q in the stored row: %s", want, row)
+		}
+	}
+
+	e.exec("UPDATE orders SET status='shipped' WHERE id=26000")
+	e.waitFor("the update to win", func() bool {
+		return strings.Contains(e.chValue(fmt.Sprintf(
+			"SELECT status FROM %s FINAL WHERE id = 26000", e.chTable())), "shipped")
+	})
+	// The engine keeps one row per key, so an update must not leave two behind.
+	if got := e.chCount("id = 26000"); got != 1 {
+		t.Errorf("rows for the key = %d, want 1 after an update", got)
+	}
+
+	// A delete is a tombstone, and FINAL is what makes it disappear from reads.
+	e.exec("DELETE FROM orders WHERE id=26000")
+	e.waitFor("the delete to take effect", func() bool { return e.chCount("id = 26000") == 0 })
+}
+
+func TestClickHouseBackfillsPreexistingRows(t *testing.T) {
+	e := setup(t)
+
+	const firstID = 26100
+	for i := 0; i < 25; i++ {
+		e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (?,7,'paid',1.00)", firstID+i)
+	}
+
+	e.startClickHouse(true)
+
+	e.waitFor("the scan to deliver every row", func() bool {
+		return e.chCount(fmt.Sprintf("id BETWEEN %d AND %d", firstID, firstID+24)) == 25
+	})
+
+	// A change made after the scan must still be applied over the scanned copy.
+	e.exec("UPDATE orders SET status='cancelled' WHERE id=?", firstID)
+	e.waitFor("a later change to win over the scanned row", func() bool {
+		return strings.Contains(e.chValue(fmt.Sprintf(
+			"SELECT status FROM %s FINAL WHERE id = %d", e.chTable(), firstID)), "cancelled")
+	})
+}
+
+func TestClickHouseConvergesAfterAnAbruptKill(t *testing.T) {
+	e := setup(t)
+	p := e.startClickHouse(false)
+
+	const firstID = 26200
+	const rows = 200
+	for i := 0; i < rows; i++ {
+		e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (?,7,'paid',1.00)", firstID+i)
+	}
+
+	e.waitFor("some rows to arrive", func() bool {
+		return e.chCount(fmt.Sprintf("id BETWEEN %d AND %d", firstID, firstID+rows-1)) > 0
+	})
+	p.kill()
+
+	e.startClickHouse(false)
+	e.waitFor("every row to converge after the restart", func() bool {
+		return e.chCount(fmt.Sprintf("id BETWEEN %d AND %d", firstID, firstID+rows-1)) == rows
+	})
 }

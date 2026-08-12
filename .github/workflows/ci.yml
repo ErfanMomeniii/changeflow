@@ -102,6 +102,7 @@ jobs:
       CHANGEFLOW_E2E_MYSQL_DSN: root:root@tcp(127.0.0.1:13306)/shop
       CHANGEFLOW_E2E_META_DSN: root:root@tcp(127.0.0.1:13306)/changeflow_meta
       CHANGEFLOW_E2E_ES_URL: http://127.0.0.1:19200
+      CHANGEFLOW_E2E_CH_DSN: http://changeflow:changeflow@127.0.0.1:18123/?database=analytics
     steps:
       - uses: actions/checkout@v4
 
@@ -129,7 +130,8 @@ jobs:
         run: |
           docker compose -f deploy/dev/docker-compose.yml ps
           curl -sf http://127.0.0.1:19200/_cluster/health | tee /dev/stderr
-          curl -sf http://127.0.0.1:19200 | tee /dev/stderr
+          curl -sf --data-binary "SELECT version()" \
+            "http://changeflow:changeflow@127.0.0.1:18123/" | tee /dev/stderr
 
       # One step per scenario. A failed step name identifies the scenario in the run
       # summary, which is quicker to read than a log, and every step runs even after
@@ -174,6 +176,18 @@ jobs:
         if: ${{ !cancelled() }}
         run: go test ./test/e2e/ -count=1 -v -timeout 5m -run TestRefusedDocumentGoesToTheDeadLetterQueueAndStreamContinues
 
+      - name: "e2e: clickhouse receives inserts, updates, and deletes"
+        if: ${{ !cancelled() }}
+        run: go test ./test/e2e/ -count=1 -v -timeout 8m -run TestClickHouseReceivesInsertsUpdatesAndDeletes
+
+      - name: "e2e: clickhouse backfills pre-existing rows"
+        if: ${{ !cancelled() }}
+        run: go test ./test/e2e/ -count=1 -v -timeout 8m -run TestClickHouseBackfillsPreexistingRows
+
+      - name: "e2e: clickhouse converges after an abrupt kill"
+        if: ${{ !cancelled() }}
+        run: go test ./test/e2e/ -count=1 -v -timeout 8m -run TestClickHouseConvergesAfterAnAbruptKill
+
       - name: service logs on failure
         if: failure()
         run: |
@@ -182,6 +196,9 @@ jobs:
           echo "::endgroup::"
           echo "::group::elasticsearch"
           docker compose -f deploy/dev/docker-compose.yml logs --tail 300 elasticsearch
+          echo "::endgroup::"
+          echo "::group::clickhouse"
+          docker compose -f deploy/dev/docker-compose.yml logs --tail 200 clickhouse
           echo "::endgroup::"
 
       - name: stop services

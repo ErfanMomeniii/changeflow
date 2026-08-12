@@ -107,7 +107,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	registry.MustRegister(collectors.NewGoCollector())
 	s.metrics = telemetry.New(registry, s.stream.Name)
 
-	if s.cfg.Runtime.MetricsAddr != "" {
+	if s.cfg.Runtime.MetricsEnabled() {
 		server := telemetry.NewServer(s.cfg.Runtime.MetricsAddr, registry, telemetry.Health{Ready: s.ready})
 		go func() {
 			if err := server.Start(ctx); err != nil {

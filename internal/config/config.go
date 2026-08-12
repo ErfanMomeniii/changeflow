@@ -30,6 +30,9 @@ const (
 	SinkClickHouse    = "clickhouse"
 )
 
+// MetricsDisabled is the metrics_addr value that switches the endpoint off.
+const MetricsDisabled = "off"
+
 // Config is a whole configuration file.
 type Config struct {
 	Source     Source             `yaml:"source"`
@@ -66,8 +69,9 @@ type Runtime struct {
 	BufferSizeRaw *int     `yaml:"buffer_size"`
 	ShutdownGrace Duration `yaml:"shutdown_grace"`
 	MetricsAddr   string   `yaml:"metrics_addr"`
-	// AssumedRowBytes is used only to estimate memory (see EstimatedMemory); it
-	// does not limit anything at runtime.
+
+	// MetricsAddr is where metrics and health are served. The value "off" disables
+	// them, which an empty value cannot express because it takes the default.
 	AssumedRowBytes ByteSize `yaml:"assumed_row_bytes"`
 
 	// BufferSize is the resolved value, filled once defaults are applied.
@@ -456,6 +460,11 @@ func (c *Config) StreamNames() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// MetricsEnabled reports whether metrics and health should be served.
+func (r Runtime) MetricsEnabled() bool {
+	return r.MetricsAddr != "" && r.MetricsAddr != MetricsDisabled
 }
 
 // Stream returns one configured stream, listing what exists when it is missing.

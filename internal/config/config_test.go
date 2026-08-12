@@ -483,6 +483,23 @@ func TestConfigExceedingMemoryLimitIsRejected(t *testing.T) {
 	}
 }
 
+// An empty value takes the default, so disabling the endpoint needs a value of its
+// own. Two processes on one machine would otherwise fight over the port.
+func TestMetricsCanBeDisabledExplicitly(t *testing.T) {
+	cfg := mustLoad(t, minimalYAML+"runtime:\n  metrics_addr: \"off\"\n")
+	if cfg.Runtime.MetricsEnabled() {
+		t.Error("metrics_addr: off should disable the endpoint")
+	}
+
+	def := mustLoad(t, minimalYAML)
+	if !def.Runtime.MetricsEnabled() {
+		t.Errorf("the default %q should serve metrics", def.Runtime.MetricsAddr)
+	}
+	if def.Runtime.MetricsAddr != "127.0.0.1:9187" {
+		t.Errorf("metrics_addr default = %q", def.Runtime.MetricsAddr)
+	}
+}
+
 func TestStreamLookupReportsUnknownName(t *testing.T) {
 	cfg := mustLoad(t, minimalYAML)
 
