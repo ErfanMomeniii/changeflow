@@ -70,6 +70,9 @@ type Plan struct {
 	fields       []field
 	keyPositions []int
 	keyNames     []string
+	// keyFields are the subset of fields forming the key, used to build a tombstone
+	// for a destination that expresses deletion as a row rather than as an operation.
+	keyFields []field
 }
 
 // Compile prepares a mapping for one table and destination, rejecting anything
@@ -144,6 +147,19 @@ func Compile(meta *schema.TableMeta, mapping config.Mapping, dialect Dialect, so
 			return nil, fmt.Errorf("transform: key column %q is not in table %s", name, meta.Name())
 		}
 		p.keyPositions = append(p.keyPositions, c.Position)
+
+		for _, f := range p.fields {
+			if f.position == c.Position {
+				p.keyFields = append(p.keyFields, f)
+				break
+			}
+		}
+	}
+
+	if dialect == DialectClickHouse && len(p.keyFields) != len(key) {
+		// A tombstone carries the key and nothing else, so every key column has to be
+		// among the written fields.
+		return nil, fmt.Errorf("transform: table %s: every key column must be written for a ClickHouse destination, since a delete is expressed as a row carrying the key", meta.Name())
 	}
 
 	return p, nil
@@ -196,7 +212,18 @@ func (p *Plan) Apply(ev *cdc.ChangeEvent) ([]cdc.Doc, error) {
 		if err != nil {
 			return nil, err
 		}
-		return []cdc.Doc{{Key: key, Version: ev.Seq, Deleted: true}}, nil
+		doc := cdc.Doc{Key: key, Version: ev.Seq, Deleted: true}
+		// Elasticsearch deletes by identifier, so it needs no body. ClickHouse has no
+		// delete: the row is superseded by a tombstone carrying its key, so the key
+		// values have to travel with it.
+		if p.dialect == DialectClickHouse {
+			body, err := p.encodeFields(p.keyFields, values)
+			if err != nil {
+				return nil, err
+			}
+			doc.Body = body
+		}
+		return []cdc.Doc{doc}, nil
 	}
 
 	newKey, err := p.key(ev.After)
@@ -305,10 +332,14 @@ func escapeKeyPart(s string) string {
 // encode writes the document body. Each value is encoded exactly once here; the
 // sinks concatenate these bytes rather than re-marshalling them.
 func (p *Plan) encode(row cdc.Row) ([]byte, error) {
+	return p.encodeFields(p.fields, row)
+}
+
+func (p *Plan) encodeFields(fields []field, row cdc.Row) ([]byte, error) {
 	buf := make([]byte, 0, 256)
 	buf = append(buf, '{')
 
-	for i, f := range p.fields {
+	for i, f := range fields {
 		if i > 0 {
 			buf = append(buf, ',')
 		}

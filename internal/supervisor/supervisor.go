@@ -29,6 +29,7 @@ import (
 	"github.com/ErfanMomeniii/changeflow/internal/preflight"
 	"github.com/ErfanMomeniii/changeflow/internal/schema"
 	"github.com/ErfanMomeniii/changeflow/internal/sink"
+	"github.com/ErfanMomeniii/changeflow/internal/sink/clickhouse"
 	"github.com/ErfanMomeniii/changeflow/internal/sink/dlq"
 	"github.com/ErfanMomeniii/changeflow/internal/sink/elasticsearch"
 	"github.com/ErfanMomeniii/changeflow/internal/source/binlog"
@@ -564,8 +565,16 @@ func (s *Supervisor) buildSink() (sink.Sink, error) {
 			Workers:   s.stream.Sink.Workers,
 			Compress:  true,
 		})
+	case config.SinkClickHouse:
+		return clickhouse.New(clickhouse.Options{
+			DSN:      s.stream.Sink.DSN,
+			Table:    s.stream.Sink.Table,
+			Workers:  s.stream.Sink.Workers,
+			Compress: true,
+		})
+
 	default:
-		return nil, fmt.Errorf("supervisor: sink type %q is not implemented yet", s.stream.Sink.Type)
+		return nil, fmt.Errorf("supervisor: sink type %q is not implemented", s.stream.Sink.Type)
 	}
 }
 
