@@ -88,6 +88,20 @@ func (c Checkpoint) LagAt(now time.Time) (time.Duration, bool) {
 	return lag, true
 }
 
+// ClearSnapshot resets the scan state so the next run scans the table again.
+//
+// The stream position is left alone deliberately. A rebuild captures a fresh position
+// when the new scan starts, and discarding the current one would strand any progress
+// made since.
+func (c *Checkpoint) ClearSnapshot() {
+	c.SnapshotDone = false
+	c.SnapshotStartGTID = ""
+	c.SnapshotCursor = nil
+	c.SnapshotBaseSeq = 0
+	c.SnapshotRowsDone = 0
+	c.SnapshotRowsTotal = 0
+}
+
 // Store persists checkpoints. Implementations must make Save atomic per stream:
 // a torn write would leave a position that was never actually reached.
 type Store interface {

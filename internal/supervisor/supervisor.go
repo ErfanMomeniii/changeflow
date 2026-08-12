@@ -240,7 +240,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	// The scan runs first when a stream has never completed one. Rows written before
 	// the stream existed produce no binlog events at all, so this is the only way
 	// they reach the destination.
-	startGTID, err := s.snapshotIfNeeded(ctx, store, sourceDB, allocator, runner, meta)
+	startGTID, err := s.snapshotIfNeeded(ctx, store, sourceDB, allocator, runner, meta, destination)
 	if err != nil {
 		return err
 	}
@@ -307,6 +307,7 @@ func (s *Supervisor) snapshotIfNeeded(
 	allocator *checkpoint.Allocator,
 	runner *pipeline.Runner,
 	meta *schema.TableMeta,
+	destination sink.Sink,
 ) (string, error) {
 	cp, err := store.Load(ctx, s.stream.Name)
 	if err != nil && !errors.Is(err, checkpoint.ErrNotFound) {
@@ -426,6 +427,24 @@ func (s *Supervisor) snapshotIfNeeded(
 		return "", fmt.Errorf("supervisor: record the completed scan: %w", err)
 	}
 	s.log.Info("table scan complete", "stream", s.stream.Name, "rows", cp.SnapshotRowsDone)
+
+	// Readers move to the freshly filled index in one action. Done after the scan
+	// rather than at startup, because until it finishes the index is incomplete and
+	// pointing readers at it would show them a half-built table.
+	if es, ok := destination.(*elasticsearch.Sink); ok && s.stream.Sink.Alias != "" {
+		before, err := es.AliasTargets(ctx)
+		if err != nil {
+			return "", fmt.Errorf("supervisor: %w", err)
+		}
+		if err := es.PromoteAlias(ctx); err != nil {
+			return "", fmt.Errorf("supervisor: %w", err)
+		}
+		if len(before) != 1 || before[0] != s.stream.Sink.Index {
+			s.log.Info("read alias moved to the newly scanned index",
+				"stream", s.stream.Name, "alias", s.stream.Sink.Alias,
+				"from", before, "to", s.stream.Sink.Index)
+		}
+	}
 
 	// Streaming begins where the scan began, so every change made during it is
 	// applied on top.
