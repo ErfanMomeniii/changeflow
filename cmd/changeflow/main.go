@@ -75,8 +75,8 @@ func usage() {
 	fmt.Fprint(os.Stderr, `changeflow - MySQL change data capture
 
 Usage:
-  changeflow run -c <config.yaml> --stream <name>
-        Replicate one configured stream until interrupted.
+  changeflow run -c <config.yaml> [--stream <name>]
+        Replicate every configured stream, or one named stream, until interrupted.
 
   changeflow status -c <config.yaml>
         Report each stream's position, lag, and snapshot state.
@@ -288,15 +288,11 @@ func runResnapshot(ctx context.Context, args []string) error {
 func runStream(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	path := fs.String("c", "changeflow.yaml", "path to the configuration file")
-	stream := fs.String("stream", "", "which configured stream to run")
+	stream := fs.String("stream", "", "run only this stream; by default every configured stream runs, sharing one connection to the source")
 	dlqDir := fs.String("dlq-dir", "dlq", "directory for records of documents a destination refused")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *stream == "" {
-		return errors.New("--stream is required; run one stream per process")
-	}
-
 	cfg, err := config.Load(*path)
 	if err != nil {
 		return err
