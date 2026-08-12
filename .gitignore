@@ -37,6 +37,10 @@ go.work.sum
 .idea/
 .vscode/
 
+# PHP dependencies
+/sdk/php/vendor/
+/sdk/php/.phpunit.cache/
+
 # AI assistant tooling and AI-facing working docs — local to a developer, never shared
 .ai/
 .claude/

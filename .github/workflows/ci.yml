@@ -56,6 +56,48 @@ jobs:
       - name: benchmarks
         run: go test ./... -run XXX -bench . -benchmem -benchtime 200ms | grep -E '^(Benchmark|goos|goarch|pkg)' || true
 
+  # The companion package application code uses. It reads changeflow's state and emits
+  # its configuration, so a change on either side that breaks the other fails here.
+  php:
+    name: php package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+          extensions: pdo, pdo_sqlite, json
+          tools: composer
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: install dependencies
+        working-directory: sdk/php
+        run: composer install --no-interaction --no-progress
+
+      - name: test
+        working-directory: sdk/php
+        run: ./vendor/bin/phpunit
+
+      # The point of the builder is that an application's own metadata produces a
+      # configuration changeflow accepts. Asserting that here means a model change that
+      # breaks the export fails the build rather than production.
+      - name: generated configuration is valid
+        env:
+          # Any values will do: validate checks the file's shape and never connects.
+          MYSQL_DSN: cdc:cdc@tcp(127.0.0.1:3306)/shop
+          META_DSN: cdc:cdc@tcp(127.0.0.1:3306)/changeflow_meta
+          ES_URL: http://127.0.0.1:9200
+        run: |
+          go build -o bin/changeflow ./cmd/changeflow
+          php sdk/php/examples/export-config.php > /tmp/generated.yaml
+          cat /tmp/generated.yaml
+          ./bin/changeflow validate -c /tmp/generated.yaml
+
   # Tests that need a real MySQL: binlog decoding, information_schema reading, the
   # checkpoint store, and the advisory lock. These are the ones that keep finding
   # bugs a stub cannot.
