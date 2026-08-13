@@ -1,0 +1,113 @@
+# Alert rules for changeflow.
+#
+# Deliberately few. Every rule here means a destination is, or is about to be, wrong in a
+# way someone has to act on; anything that resolves itself belongs on a dashboard instead.
+# Thresholds assume a stream whose consumers tolerate a few minutes of staleness — tighten
+# them per stream where that is not true.
+groups:
+  - name: changeflow
+    rules:
+      # The one number that matters: how stale the destination is. Every other symptom
+      # eventually shows up here.
+      - alert: ChangeflowLagHigh
+        expr: changeflow_binlog_lag_seconds > 300
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.stream }} is {{ $value | humanizeDuration }} behind MySQL"
+          description: >-
+            Check changeflow_queue_depth. High means the destination is the bottleneck:
+            raise sink.workers or batch.max_rows, or run the stream on its own with
+            --stream. Near zero means the source or a large transaction is the bottleneck.
+
+      - alert: ChangeflowLagCritical
+        expr: changeflow_binlog_lag_seconds > 1800
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.stream }} is {{ $value | humanizeDuration }} behind MySQL"
+          description: >-
+            A lag approaching the source's binlog retention becomes unrecoverable: once the
+            transactions the stream needs are purged, only a full rescan can reconcile it.
+
+      # A stopped stream stops advancing its position, so the age of the checkpoint keeps
+      # growing whether the process is down, deadlocked, or failing to write.
+      - alert: ChangeflowStreamNotAdvancing
+        expr: changeflow_checkpoint_age_seconds > 600
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.stream }} has not recorded a position for {{ $value | humanizeDuration }}"
+          description: >-
+            Run `changeflow status`, which reads the checkpoint table and reports the last
+            error even when nothing is running.
+
+      # A refused document is in the dead letter queue and not in the destination. It will
+      # not arrive on its own.
+      - alert: ChangeflowDocumentsRefused
+        expr: increase(changeflow_dead_lettered_total[15m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.stream }} had {{ $value }} document(s) refused by its destination"
+          description: >-
+            Read the dead letter files for the reason, which is usually a mapping that
+            cannot hold a value. Fix the mapping and rebuild; the rows are missing until
+            then.
+
+      # Retries hide a failing destination until they stop working. Sustained errors mean
+      # the writes are only succeeding some of the time, if at all.
+      - alert: ChangeflowSinkErrors
+        expr: rate(changeflow_sink_errors_total[5m]) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.stream }} is failing to write to its destination"
+          description: >-
+            Being retried, so lag is the visible effect. Check the destination's own health
+            before changing anything here.
+
+      # Back pressure at the queue means the destination cannot keep up with the source.
+      # On a shared reader this slows every other stream too.
+      - alert: ChangeflowQueueSaturated
+        expr: changeflow_queue_depth > 6000
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.stream }} has {{ $value }} events waiting for its destination"
+          description: >-
+            Every stream on a source shares one reader, so this stream is now slowing its
+            siblings. Give it more workers or its own process with --stream.
+
+      # A backfill that never finishes is a destination that is permanently incomplete, and
+      # a scan running longer than the binlog is retained cannot be followed by streaming.
+      - alert: ChangeflowSnapshotStalled
+        expr: |
+          changeflow_snapshot_running == 1
+          and changes(changeflow_snapshot_rows_done[30m]) == 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.stream }}'s table scan has not progressed for 30 minutes"
+          description: >-
+            Check the source for a lock or a slow query, and snapshot.max_rate_rows_per_sec
+            in case the scan is throttled lower than intended.
+
+      # Expected in bursts after a restart, when a replayed batch is correctly discarded.
+      # Continuous staleness means two writers, or a version that is not increasing.
+      - alert: ChangeflowStaleWritesContinuous
+        expr: rate(changeflow_documents_stale_total[15m]) > 1
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.stream }} keeps writing documents the destination already has"
+          description: >-
+            A burst after a restart is normal. Sustained means something else is writing to
+            this destination, or versions are not increasing as they must.

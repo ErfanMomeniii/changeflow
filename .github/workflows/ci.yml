@@ -52,6 +52,13 @@ jobs:
       - name: performance budgets
         run: go test ./internal/pipeline/ ./internal/sink/elasticsearch/ -count=1 -run 'Budget|Cheap' -v
 
+      # Alert rules are shipped, so a rule that does not parse would be discovered when it
+      # was needed rather than here.
+      - name: alert rules
+        run: |
+          docker run --rm -v "$PWD/deploy/prometheus:/rules:ro" \
+            --entrypoint promtool prom/prometheus:v3.4.0 check rules /rules/alerts.yml
+
       # Recorded for whoever reads the run, not compared automatically.
       - name: benchmarks
         run: go test ./... -run XXX -bench . -benchmem -benchtime 200ms | grep -E '^(Benchmark|goos|goarch|pkg)' || true

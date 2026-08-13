@@ -1,0 +1,70 @@
+# Local development configuration, matching the containers in docker-compose.yml and the
+# tables in seed.sql. The orders table is deliberately awkward: an unsigned identifier
+# above 2^63, an exact decimal, ENUM and SET, DATETIME beside TIMESTAMP, JSON, and a latin1
+# column.
+#
+# Every value here can be overridden from the environment, so the same file works against
+# a real source without editing.
+source:
+  dsn: "${MYSQL_DSN:-cdc:cdc@tcp(127.0.0.1:13306)/shop}"
+  # Unique across every replica of this master, including other developers' processes.
+  server_id: ${SERVER_ID:-1001}
+
+checkpoint:
+  dsn: "${META_DSN:-cdc:cdc@tcp(127.0.0.1:13306)/changeflow_meta}"
+
+runtime:
+  metrics_addr: "${METRICS_ADDR:-127.0.0.1:9187}"
+
+streams:
+  orders_to_es:
+    table: shop.orders
+    snapshot:
+      # Small chunks make progress and resumption visible on a table this size.
+      chunk_size: 500
+    batch:
+      max_rows: 500
+      flush_interval: 250ms
+    sink:
+      type: elasticsearch
+      addresses: ["${ES_URL:-http://127.0.0.1:19200}"]
+      # The concrete index. A mapping change fills a new one and moves the alias.
+      index: orders-v1
+      alias: orders
+    mapping:
+      key: [id]
+      # An internal column that should not leave the database.
+      exclude: [internal_note]
+      rename:
+        total_amount: total
+
+  orders_to_clickhouse:
+    table: shop.orders
+    snapshot:
+      chunk_size: 500
+    batch:
+      max_rows: 500
+      flush_interval: 250ms
+    sink:
+      type: clickhouse
+      dsn: "${CH_DSN:-http://changeflow:changeflow@127.0.0.1:18123/?database=analytics}"
+      table: analytics.orders
+    mapping:
+      key: [id]
+      exclude: [internal_note]
+
+  # A composite key, to see how keys are joined and escaped.
+  order_items_to_es:
+    table: shop.order_items
+    snapshot:
+      chunk_size: 500
+    batch:
+      max_rows: 500
+      flush_interval: 250ms
+    sink:
+      type: elasticsearch
+      addresses: ["${ES_URL:-http://127.0.0.1:19200}"]
+      index: order-items-v1
+      alias: order-items
+    mapping:
+      key: [order_id, sku]
