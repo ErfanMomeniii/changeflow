@@ -40,6 +40,7 @@ go.work.sum
 # PHP dependencies
 /sdk/php/vendor/
 /sdk/php/.phpunit.cache/
+/sdk/php/.phpunit.result.cache
 
 # AI assistant tooling and AI-facing working docs — local to a developer, never shared
 .ai/
