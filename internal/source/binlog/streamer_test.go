@@ -3,6 +3,7 @@ package binlog
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -557,5 +558,40 @@ func TestNewRejectsIncompleteOptions(t *testing.T) {
 				t.Fatal("expected the reader to refuse these options")
 			}
 		})
+	}
+}
+
+// The one failure a restart cannot fix has to say so. Without this it arrives as a bare
+// server error, and the actual remedy — a rescan — is left for someone to work out during
+// an incident.
+func TestAPurgedPositionSaysWhatToDoAboutIt(t *testing.T) {
+	err := explain(&mysql.MyError{
+		Code:    errBinlogReadFailure,
+		Message: "The replica is connecting using CHANGE REPLICATION SOURCE TO MASTER_AUTO_POSITION = 1, but the source has purged binary logs containing GTIDs that the replica requires",
+	})
+
+	if !errors.Is(err, ErrPositionPurged) {
+		t.Fatalf("error = %v, want it to be recognisable as a purged position", err)
+	}
+	if !strings.Contains(err.Error(), "resnapshot") {
+		t.Errorf("the error should name the remedy, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "purged binary logs") {
+		t.Errorf("the server's own words should survive, got %v", err)
+	}
+}
+
+// Everything else is a connection or protocol problem a restart may well fix, and
+// dressing it up as a lost position would send someone to rescan a table for nothing.
+func TestOtherServerErrorsArePassedThrough(t *testing.T) {
+	original := &mysql.MyError{Code: 1045, Message: "Access denied for user 'cdc'@'%'"}
+
+	err := explain(original)
+
+	if errors.Is(err, ErrPositionPurged) {
+		t.Error("an access denial was reported as a purged position")
+	}
+	if err != original {
+		t.Errorf("error = %v, want it returned unchanged", err)
 	}
 }

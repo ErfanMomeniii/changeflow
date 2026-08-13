@@ -22,6 +22,29 @@ import (
 	"github.com/ErfanMomeniii/changeflow/internal/schema"
 )
 
+// ErrPositionPurged means the source no longer holds the transactions a stream needs.
+//
+// It is the one failure a restart cannot fix, so it is worth telling apart from a
+// connection problem: the data between the recorded position and the oldest retained
+// transaction exists nowhere any more, and only reading the table again can reconcile it.
+var ErrPositionPurged = errors.New("binlog: the recorded position is no longer in the source's binlog")
+
+// errBinlogReadFailure is MySQL's code for a replica asking for a position the master
+// cannot serve, which in practice almost always means the binlog has been rotated away.
+const errBinlogReadFailure = 1236
+
+// explain turns a server error into one that says what to do about it. Everything else is
+// returned as it came.
+func explain(err error) error {
+	var serverErr *mysql.MyError
+	if errors.As(err, &serverErr) && serverErr.Code == errBinlogReadFailure {
+		return fmt.Errorf("%w: %s; rescan the table with `changeflow resnapshot --stream <name> --confirm` "+
+			"and start the stream again, or lengthen binlog_expire_logs_seconds so an outage this long is survivable",
+			ErrPositionPurged, serverErr.Message)
+	}
+	return err
+}
+
 // Sequencer hands out the versions stamped on events. It is an interface so the
 // reader does not depend on where positions are stored.
 type Sequencer interface {
@@ -169,14 +192,14 @@ func (s *Streamer) run(ctx context.Context, out chan<- cdc.ChangeEvent) error {
 
 	streamer, err := s.syncer.StartSyncGTID(gtidSet)
 	if err != nil {
-		return fmt.Errorf("binlog: start replication from %s: %w", s.opts.StartGTID, err)
+		return fmt.Errorf("binlog: start replication from %s: %w", s.opts.StartGTID, explain(err))
 	}
 	s.log.Info("replication started", "from", s.opts.StartGTID, "server_id", s.opts.ServerID)
 
 	for {
 		ev, err := streamer.GetEvent(ctx)
 		if err != nil {
-			return err
+			return explain(err)
 		}
 		if err := s.handle(ctx, ev, out); err != nil {
 			return err
