@@ -207,7 +207,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		positions[rt.cfg.Name] = position
 	}
 
-	return s.stream(ctx, schemas, runtimes, positions)
+	return s.stream(ctx, store, schemas, runtimes, positions)
 }
 
 // checkSource refuses to replicate from a server that cannot support it.
@@ -350,6 +350,7 @@ func (s *Supervisor) release(ctx context.Context, runtimes []*streamRuntime) {
 // stream reads the source once and fans each change out to the streams that want it.
 func (s *Supervisor) stream(
 	ctx context.Context,
+	store *checkpoint.MySQLStore,
 	schemas *schema.Store,
 	runtimes []*streamRuntime,
 	positions map[string]string,
@@ -406,10 +407,14 @@ func (s *Supervisor) stream(
 	for _, rt := range runtimes {
 		rt := rt
 		rt.state.set(true, nil)
+		// A previous run's failure is no longer the current state, and leaving it would
+		// have status reporting an error that has been resolved.
+		s.recordError(ctx, store, rt.cfg.Name, nil)
 		group.run(func() error {
 			err := rt.runner.Run(groupCtx, rt.events)
 			rt.state.set(false, err)
 			if err != nil && !errors.Is(err, context.Canceled) {
+				s.recordError(ctx, store, rt.cfg.Name, err)
 				return fmt.Errorf("stream %s: %w", rt.cfg.Name, err)
 			}
 			return nil
@@ -429,6 +434,11 @@ func (s *Supervisor) stream(
 			}
 		}
 		if err := streamer.Err(); err != nil {
+			// The reader serves every stream, so its failure is recorded against all of
+			// them: each one has stopped, and each will be looked at on its own.
+			for _, rt := range runtimes {
+				s.recordError(ctx, store, rt.cfg.Name, err)
+			}
 			return fmt.Errorf("supervisor: source stopped: %w", err)
 		}
 		return nil
@@ -551,11 +561,8 @@ func (s *Supervisor) snapshotIfNeeded(
 	rt.metrics.SnapshotRunning(true)
 	defer rt.metrics.SnapshotRunning(false)
 
-	if err := rt.runner.Run(ctx, scanner.Events(ctx)); err != nil {
+	if err := s.scan(ctx, rt, scanner); err != nil {
 		return "", err
-	}
-	if err := scanner.Err(); err != nil {
-		return "", fmt.Errorf("supervisor: table scan: %w", err)
 	}
 	if !scanner.Done() {
 		// Stopping short is not a failure, but the scan must not be recorded as complete,
@@ -582,6 +589,100 @@ func (s *Supervisor) snapshotIfNeeded(
 	// Streaming begins where the scan began, so every change made during it is applied on
 	// top.
 	return cp.SnapshotStartGTID, nil
+}
+
+// recordError keeps the reason a stream stopped where an operator will look for it: the
+// checkpoint row, which `changeflow status` and the PHP package read.
+//
+// A nil error clears it. Detached from the given context because this runs precisely when
+// something is shutting down, and best effort because failing to record why a stream
+// stopped must not replace the reason it stopped.
+func (s *Supervisor) recordError(ctx context.Context, store *checkpoint.MySQLStore, stream string, cause error) {
+	reason := ""
+	if cause != nil {
+		reason = cause.Error()
+	}
+
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+
+	if err := store.RecordError(writeCtx, stream, reason); err != nil {
+		s.log.Warn("could not record the stream's state", "stream", stream, "error", err)
+	}
+}
+
+// scan fills the destination from the table, with refreshing and replication turned off
+// for the duration where that is safe.
+func (s *Supervisor) scan(ctx context.Context, rt *streamRuntime, scanner *snapshot.Snapshotter) error {
+	load, err := s.beginBulkLoad(ctx, rt)
+	if err != nil {
+		// A scan that cannot change the destination's settings is slower, not wrong.
+		s.log.Warn("could not prepare the destination for a bulk load",
+			"stream", rt.cfg.Name, "error", err)
+	}
+	// Restored even when the scan stops early, so an interrupted rebuild does not leave
+	// behind an index that never refreshes. Detached from the cancelled context, since
+	// shutdown is exactly when this has to still happen.
+	defer func() {
+		if !load.Applied() {
+			return
+		}
+		restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		if err := rt.sink.(*elasticsearch.Sink).EndBulkLoad(restoreCtx, load); err != nil {
+			s.log.Warn("could not restore the destination's settings after the scan",
+				"stream", rt.cfg.Name, "index", rt.cfg.Sink.Index, "error", err)
+		}
+	}()
+
+	if err := rt.runner.Run(ctx, scanner.Events(ctx)); err != nil {
+		return err
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("supervisor: table scan: %w", err)
+	}
+	if !scanner.Done() {
+		return nil
+	}
+
+	// Merged while the index still has no replicas, so the result is copied once instead
+	// of every pre-merge segment being copied and merged again on each replica.
+	if load.Applied() {
+		if err := rt.sink.(*elasticsearch.Sink).ForceMerge(ctx); err != nil {
+			s.log.Warn("could not merge the scanned index's segments, which only makes it slower to search",
+				"stream", rt.cfg.Name, "index", rt.cfg.Sink.Index, "error", err)
+		}
+	}
+	return nil
+}
+
+// beginBulkLoad relaxes the destination's settings for a scan, but only when readers are
+// not using the index being filled.
+//
+// An index with refreshing off answers searches with nothing, and one with no replicas
+// has no redundancy, so this is only for an index being built behind an alias. Without an
+// alias the index being filled is the one being read, and it is left alone.
+func (s *Supervisor) beginBulkLoad(ctx context.Context, rt *streamRuntime) (elasticsearch.LoadSettings, error) {
+	var none elasticsearch.LoadSettings
+
+	es, ok := rt.sink.(*elasticsearch.Sink)
+	if !ok || rt.cfg.Sink.Alias == "" {
+		return none, nil
+	}
+
+	targets, err := es.AliasTargets(ctx)
+	if err != nil {
+		return none, err
+	}
+	for _, index := range targets {
+		if index == rt.cfg.Sink.Index {
+			return none, nil
+		}
+	}
+
+	s.log.Info("filling a new index with refreshing and replication off for the scan",
+		"stream", rt.cfg.Name, "index", rt.cfg.Sink.Index, "readers_on", targets)
+	return es.BeginBulkLoad(ctx)
 }
 
 // promoteAlias moves readers to the index a scan has just filled.
