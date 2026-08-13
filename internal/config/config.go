@@ -68,10 +68,11 @@ type Runtime struct {
 	// distinguishable from an absent value and can be reported as a mistake.
 	BufferSizeRaw *int     `yaml:"buffer_size"`
 	ShutdownGrace Duration `yaml:"shutdown_grace"`
-	MetricsAddr   string   `yaml:"metrics_addr"`
-
 	// MetricsAddr is where metrics and health are served. The value "off" disables
 	// them, which an empty value cannot express because it takes the default.
+	MetricsAddr string `yaml:"metrics_addr"`
+	// AssumedRowBytes is the per-row estimate the memory projection uses, for tables
+	// whose rows are much larger or smaller than typical.
 	AssumedRowBytes ByteSize `yaml:"assumed_row_bytes"`
 
 	// BufferSize is the resolved value, filled once defaults are applied.
@@ -97,11 +98,6 @@ type Snapshot struct {
 	EnabledRaw           *bool `yaml:"enabled"`
 	ChunkSizeRaw         *int  `yaml:"chunk_size"`
 	MaxRateRowsPerSecRaw *int  `yaml:"max_rate_rows_per_sec"`
-	// TargetIndex and TargetTable name a fresh destination for a rebuild, which is
-	// swapped in atomically once the scan completes.
-	TargetIndex string `yaml:"target_index"`
-	TargetTable string `yaml:"target_table"`
-
 	// Resolved values, filled once defaults are applied.
 	Enabled           bool `yaml:"-"`
 	ChunkSize         int  `yaml:"-"`
@@ -131,7 +127,6 @@ type Sink struct {
 	Addresses []string `yaml:"addresses"`
 	Index     string   `yaml:"index"`
 	Alias     string   `yaml:"alias"`
-	LoadMode  bool     `yaml:"load_mode"`
 
 	// ClickHouse
 	DSN   string `yaml:"dsn"`
@@ -141,12 +136,11 @@ type Sink struct {
 // Mapping selects and reshapes the columns a stream writes.
 type Mapping struct {
 	// Key defaults to the table's primary key, discovered from the server.
-	Key             []string          `yaml:"key"`
-	Include         []string          `yaml:"include"`
-	Exclude         []string          `yaml:"exclude"`
-	Rename          map[string]string `yaml:"rename"`
-	AllowNewColumns bool              `yaml:"allow_new_columns"`
-	OnZeroDate      string            `yaml:"on_zero_date"`
+	Key        []string          `yaml:"key"`
+	Include    []string          `yaml:"include"`
+	Exclude    []string          `yaml:"exclude"`
+	Rename     map[string]string `yaml:"rename"`
+	OnZeroDate string            `yaml:"on_zero_date"`
 }
 
 var (
@@ -395,9 +389,6 @@ func (k *Sink) validate(path string, add func(string, ...any)) {
 		}
 		if k.Alias != "" {
 			add("%s.alias does not apply to a clickhouse sink", path)
-		}
-		if k.LoadMode {
-			add("%s.load_mode does not apply to a clickhouse sink", path)
 		}
 
 	case "":
