@@ -367,6 +367,11 @@ func runStatus(ctx context.Context, args []string) error {
 			snapshot = fmt.Sprintf("%d%%", 100*cp.SnapshotRowsDone/cp.SnapshotRowsTotal)
 		}
 		fmt.Printf("%-28s %-10s %-12s %s\n", name, lag, snapshot, cp.GTIDSet)
+		if cp.LastError != "" {
+			// Under the row rather than in a column: it is the one field worth reading in
+			// full, and a stopped stream is why anyone runs this.
+			fmt.Printf("%-28s stopped: %s\n", "", cp.LastError)
+		}
 	}
 	return nil
 }
