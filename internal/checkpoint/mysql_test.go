@@ -446,3 +446,152 @@ func TestNewMySQLStoreAcceptsQualifiedName(t *testing.T) {
 		t.Fatalf("expected a database-qualified table name to be accepted: %v", err)
 	}
 }
+
+// A stopped stream's reason belongs where an operator looks for it, and it has to survive
+// the process that failed.
+func TestRecordErrorKeepsTheReasonAStreamStopped(t *testing.T) {
+	store, _ := testStore(t)
+
+	if err := store.Save(t.Context(), Checkpoint{Stream: "orders", GTIDSet: "uuid:1-5"}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if err := store.RecordError(t.Context(), "orders", "sink refused the batch"); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+
+	cp, err := store.Load(t.Context(), "orders")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cp.LastError != "sink refused the batch" {
+		t.Errorf("last error = %q, want the recorded reason", cp.LastError)
+	}
+	// Recording a failure must not disturb the position, or a restart would replay from
+	// somewhere other than where the stream got to.
+	if cp.GTIDSet != "uuid:1-5" {
+		t.Errorf("position = %q, want it untouched", cp.GTIDSet)
+	}
+}
+
+func TestRecordErrorClearsAResolvedFailure(t *testing.T) {
+	store, _ := testStore(t)
+
+	if err := store.Save(t.Context(), Checkpoint{Stream: "orders", LastError: "old news"}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if err := store.RecordError(t.Context(), "orders", ""); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+
+	cp, err := store.Load(t.Context(), "orders")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cp.LastError != "" {
+		t.Errorf("last error = %q, want it cleared once the stream is running again", cp.LastError)
+	}
+}
+
+// A driver error can carry a whole request body, which must not fill the column and fail
+// the write that is trying to explain a failure.
+func TestRecordErrorTruncatesAnOverlongReason(t *testing.T) {
+	store, _ := testStore(t)
+
+	if err := store.Save(t.Context(), Checkpoint{Stream: "orders"}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if err := store.RecordError(t.Context(), "orders", strings.Repeat("x", 5000)); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+
+	cp, err := store.Load(t.Context(), "orders")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(cp.LastError) > maxRecordedErrorLen+4 {
+		t.Errorf("stored %d bytes, want it bounded near %d", len(cp.LastError), maxRecordedErrorLen)
+	}
+	if !strings.HasSuffix(cp.LastError, "…") {
+		t.Error("a truncated reason should say that it was truncated")
+	}
+}
+
+// Nothing has failed about a stream that has never run, so there is no row to update and
+// that is not an error.
+func TestRecordErrorOnAnUnknownStreamIsNotAnError(t *testing.T) {
+	store, _ := testStore(t)
+
+	if err := store.RecordError(t.Context(), "never_ran", "something"); err != nil {
+		t.Errorf("record: %v", err)
+	}
+}
+
+// A running service should hold no DDL rights, and MySQL refuses CREATE TABLE IF NOT
+// EXISTS without CREATE even when the table already exists. A stream that cannot start
+// under the grants it is documented to need would be found in production, not here.
+func TestEnsureSchemaWorksWithDMLRightsOnly(t *testing.T) {
+	adminDSN := os.Getenv("CHANGEFLOW_TEST_WRITE_DSN")
+	if adminDSN == "" {
+		t.Skip("set CHANGEFLOW_TEST_WRITE_DSN to a user that may grant, to run this")
+	}
+	store, _ := testStore(t)
+
+	admin, err := sql.Open("mysql", adminDSN)
+	if err != nil {
+		t.Fatalf("open admin: %v", err)
+	}
+	defer admin.Close()
+
+	// A user with exactly the rights the README asks for, and nothing more.
+	const user = "cf_dml_only"
+	for _, statement := range []string{
+		"DROP USER IF EXISTS '" + user + "'@'%'",
+		"CREATE USER '" + user + "'@'%' IDENTIFIED BY 'secret'",
+		"GRANT SELECT, INSERT, UPDATE, DELETE ON `changeflow_meta`.* TO '" + user + "'@'%'",
+	} {
+		if _, err := admin.ExecContext(t.Context(), statement); err != nil {
+			t.Skipf("cannot prepare a restricted user (%v); this needs a user that may grant", err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = admin.Exec("DROP USER IF EXISTS '" + user + "'@'%'")
+	})
+
+	restricted, err := sql.Open("mysql", "cf_dml_only:secret@tcp("+hostOf(adminDSN)+")/changeflow_meta")
+	if err != nil {
+		t.Fatalf("open restricted: %v", err)
+	}
+	defer restricted.Close()
+
+	limited, err := NewMySQLStore(restricted, store.table)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+
+	// The table exists, applied by whoever holds DDL rights.
+	if err := limited.EnsureSchema(t.Context()); err != nil {
+		t.Fatalf("a service with DML rights only could not start: %v", err)
+	}
+	// And it can do the work it exists to do.
+	if err := limited.Save(t.Context(), Checkpoint{Stream: "orders", GTIDSet: "uuid:1-9"}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if cp, err := limited.Load(t.Context(), "orders"); err != nil || cp.GTIDSet != "uuid:1-9" {
+		t.Fatalf("load = %+v, %v", cp, err)
+	}
+}
+
+// hostOf pulls the address out of a DSN, so a restricted user can be pointed at the same
+// server without a second variable to keep in step.
+func hostOf(dsn string) string {
+	start := strings.Index(dsn, "tcp(")
+	if start < 0 {
+		return "127.0.0.1:3306"
+	}
+	rest := dsn[start+len("tcp("):]
+	end := strings.Index(rest, ")")
+	if end < 0 {
+		return "127.0.0.1:3306"
+	}
+	return rest[:end]
+}

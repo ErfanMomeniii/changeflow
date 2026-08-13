@@ -81,13 +81,29 @@ func validateIdentifier(name string) error {
 
 // EnsureSchema creates the checkpoint table if it does not exist.
 //
-// This needs CREATE, which a runtime user should not hold. In production, apply
-// the DDL with a migration tool and give the running service only DML rights.
+// The existence check comes first, and not as an optimisation: MySQL refuses
+// CREATE TABLE IF NOT EXISTS without the CREATE privilege even when the table is
+// already there. Looking before creating is what lets one code path serve both a
+// fresh development database and a service whose table was applied by a migration
+// and which holds only the DML rights it needs to run.
 func (s *MySQLStore) EnsureSchema(ctx context.Context) error {
+	if s.schemaExists(ctx) {
+		return nil
+	}
 	if _, err := s.db.ExecContext(ctx, fmt.Sprintf(Schema, s.table)); err != nil {
 		return fmt.Errorf("checkpoint: create table %s: %w", s.table, err)
 	}
 	return nil
+}
+
+// schemaExists reports whether the table can be read. It asks for no rows, so the answer
+// costs nothing and needs only the SELECT the store uses anyway.
+func (s *MySQLStore) schemaExists(ctx context.Context) bool {
+	var one int
+	err := s.db.QueryRowContext(ctx, fmt.Sprintf("SELECT 1 FROM %s WHERE 1=0", s.table)).Scan(&one)
+	// No rows means the query ran, which means the table is there. Any error is treated as
+	// absent, leaving the attempt to create it to report what is actually wrong.
+	return errors.Is(err, sql.ErrNoRows)
 }
 
 // ErrNotInitialized reports that the checkpoint table does not exist. It is
@@ -216,6 +232,38 @@ func (s *MySQLStore) Save(ctx context.Context, cp Checkpoint) error {
 		cp.LastError, cp.SchemaVersion,
 	); err != nil {
 		return fmt.Errorf("checkpoint: save %s: %w", cp.Stream, err)
+	}
+	return nil
+}
+
+// maxRecordedErrorLen bounds what is stored, so a driver error carrying a whole payload
+// cannot fill the column or the screen.
+const maxRecordedErrorLen = 1000
+
+// RecordError stores why a stream stopped, or clears it when given an empty reason.
+//
+// Narrow on purpose: a whole-row save would carry a position read before the stream
+// failed, which could move a checkpoint backwards. This touches one column and never a
+// position.
+//
+// A stream that has never checkpointed has no row to update, and that is not an error:
+// there is nothing about it to report yet.
+func (s *MySQLStore) RecordError(ctx context.Context, stream, reason string) error {
+	if err := validateStream(stream); err != nil {
+		return err
+	}
+	if len(reason) > maxRecordedErrorLen {
+		reason = reason[:maxRecordedErrorLen] + "…"
+	}
+
+	var value any
+	if reason != "" {
+		value = reason
+	}
+
+	q := fmt.Sprintf("UPDATE %s SET last_error = ? WHERE stream = ?", s.table)
+	if _, err := s.db.ExecContext(ctx, q, value, stream); err != nil {
+		return fmt.Errorf("checkpoint: record the error for %s: %w", stream, err)
 	}
 	return nil
 }
