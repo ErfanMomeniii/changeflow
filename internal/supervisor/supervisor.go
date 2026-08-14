@@ -611,8 +611,8 @@ func (s *Supervisor) recordError(ctx context.Context, store *checkpoint.MySQLSto
 	}
 }
 
-// scan fills the destination from the table, with refreshing and replication turned off
-// for the duration where that is safe.
+// scan fills the destination from the table, with refreshing turned off for the duration
+// where that is safe.
 func (s *Supervisor) scan(ctx context.Context, rt *streamRuntime, scanner *snapshot.Snapshotter) error {
 	load, err := s.beginBulkLoad(ctx, rt)
 	if err != nil {
@@ -645,8 +645,8 @@ func (s *Supervisor) scan(ctx context.Context, rt *streamRuntime, scanner *snaps
 		return nil
 	}
 
-	// Merged while the index still has no replicas, so the result is copied once instead
-	// of every pre-merge segment being copied and merged again on each replica.
+	// Merged once the index is full, because a scan leaves far more segments behind than
+	// an index that grew gradually, and search cost scales with their number.
 	if load.Applied() {
 		if err := rt.sink.(*elasticsearch.Sink).ForceMerge(ctx); err != nil {
 			s.log.Warn("could not merge the scanned index's segments, which only makes it slower to search",
@@ -659,9 +659,9 @@ func (s *Supervisor) scan(ctx context.Context, rt *streamRuntime, scanner *snaps
 // beginBulkLoad relaxes the destination's settings for a scan, but only when readers are
 // not using the index being filled.
 //
-// An index with refreshing off answers searches with nothing, and one with no replicas
-// has no redundancy, so this is only for an index being built behind an alias. Without an
-// alias the index being filled is the one being read, and it is left alone.
+// An index with refreshing off answers searches with nothing, so this is only for an
+// index being built behind an alias. Without an alias the index being filled is the one
+// being read, and it is left alone.
 func (s *Supervisor) beginBulkLoad(ctx context.Context, rt *streamRuntime) (elasticsearch.LoadSettings, error) {
 	var none elasticsearch.LoadSettings
 
@@ -680,7 +680,7 @@ func (s *Supervisor) beginBulkLoad(ctx context.Context, rt *streamRuntime) (elas
 		}
 	}
 
-	s.log.Info("filling a new index with refreshing and replication off for the scan",
+	s.log.Info("filling a new index with refreshing off for the scan",
 		"stream", rt.cfg.Name, "index", rt.cfg.Sink.Index, "readers_on", targets)
 	return es.BeginBulkLoad(ctx)
 }

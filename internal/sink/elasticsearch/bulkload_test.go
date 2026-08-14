@@ -86,9 +86,9 @@ func (f *settingsServer) recorded() ([]string, int, int) {
 	return append([]string(nil), f.applied...), f.refreshed, f.merged
 }
 
-// Refreshing and replicating during a scan is work done over data that is about to grow,
-// so both are off for its duration.
-func TestBulkLoadTurnsOffRefreshAndReplication(t *testing.T) {
+// Refreshing during a scan is work done over data that is about to grow, so it is off for
+// its duration.
+func TestBulkLoadTurnsOffRefreshing(t *testing.T) {
 	server := &settingsServer{declared: `"refresh_interval":"5s","number_of_replicas":"2"`}
 	s := server.sink(t)
 
@@ -107,8 +107,10 @@ func TestBulkLoadTurnsOffRefreshAndReplication(t *testing.T) {
 	if !strings.Contains(applied[0], `"refresh_interval":"-1"`) {
 		t.Errorf("refreshing was not turned off: %s", applied[0])
 	}
-	if !strings.Contains(applied[0], `"number_of_replicas":0`) {
-		t.Errorf("replication was not turned off: %s", applied[0])
+	// The replica count is left alone: a scan killed partway through would leave no way
+	// to tell an index that declares no replicas from one that had them taken away.
+	if strings.Contains(applied[0], "number_of_replicas") {
+		t.Errorf("the replica count should not be touched: %s", applied[0])
 	}
 }
 
@@ -133,9 +135,6 @@ func TestBulkLoadRestoresWhatItReplaced(t *testing.T) {
 	if !strings.Contains(applied[1], `"refresh_interval":"5s"`) {
 		t.Errorf("the refresh interval was not restored: %s", applied[1])
 	}
-	if !strings.Contains(applied[1], `"number_of_replicas":"2"`) {
-		t.Errorf("the replica count was not restored: %s", applied[1])
-	}
 	// Nothing written while refreshing was off is searchable until a refresh, so readers
 	// moved to this index immediately afterwards would find it empty.
 	if refreshed != 1 {
@@ -158,8 +157,32 @@ func TestBulkLoadClearsSettingsTheIndexNeverDeclared(t *testing.T) {
 	}
 
 	applied, _, _ := server.recorded()
-	if got := applied[1]; !strings.Contains(got, `"refresh_interval":null`) || !strings.Contains(got, `"number_of_replicas":null`) {
-		t.Errorf("expected the overrides to be cleared, got %s", got)
+	if got := applied[1]; !strings.Contains(got, `"refresh_interval":null`) {
+		t.Errorf("expected the override to be cleared, got %s", got)
+	}
+}
+
+// A scan killed partway through leaves refreshing off. Reading that back as the value to
+// restore would leave the index never refreshing, while an alias was moved to it: readers
+// would find it empty and nothing would say why.
+func TestBulkLoadTreatsRefreshingAlreadyOffAsLeftBehind(t *testing.T) {
+	server := &settingsServer{declared: `"refresh_interval":"-1","number_of_replicas":"0"`}
+	s := server.sink(t)
+
+	load, err := s.BeginBulkLoad(context.Background())
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if err := s.EndBulkLoad(context.Background(), load); err != nil {
+		t.Fatalf("end: %v", err)
+	}
+
+	applied, refreshed, _ := server.recorded()
+	if got := applied[1]; !strings.Contains(got, `"refresh_interval":null`) {
+		t.Errorf("restored to %s, want the cluster default rather than the value a killed scan left", got)
+	}
+	if refreshed != 1 {
+		t.Errorf("the index was refreshed %d times, want once", refreshed)
 	}
 }
 
