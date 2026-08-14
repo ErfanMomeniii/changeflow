@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ErfanMomeniii/changeflow/internal/cdc"
 	"github.com/ErfanMomeniii/changeflow/internal/sink"
@@ -327,5 +328,99 @@ func TestNewRejectsIncompleteOptions(t *testing.T) {
 				t.Fatalf("expected options %+v to be rejected", tc.opts)
 			}
 		})
+	}
+}
+
+// Any count above zero means documents that are not in the destination, so it has to
+// include the files rotation moved aside.
+func TestCountIncludesRotatedFiles(t *testing.T) {
+	stamp := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
+	w, dir := newTestWriter(t, func(o *Options) {
+		// Small enough that each call rotates, which is what produces several files.
+		o.MaxBytes = 1
+		o.Now = func() time.Time { return stamp }
+	})
+
+	if err := w.Record(t.Context(), []sink.Rejection{rejection("1", "refused"), rejection("2", "refused")}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	// A second batch, after the first file was rotated away, with a different stamp so
+	// the names differ.
+	stamp = stamp.Add(time.Second)
+	if err := w.Record(t.Context(), []sink.Rejection{rejection("3", "refused")}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+
+	files, err := Files(dir, "orders_to_es")
+	if err != nil {
+		t.Fatalf("files: %v", err)
+	}
+	if len(files) < 2 {
+		t.Fatalf("found %d file(s), expected the rotated ones too: %v", len(files), files)
+	}
+
+	count, err := Count(dir, "orders_to_es")
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("count = %d, want every refused document across rotated files", count)
+	}
+}
+
+func TestCountIsPerStream(t *testing.T) {
+	dir := t.TempDir()
+	for stream, records := range map[string]int{"orders_to_es": 2, "users_to_es": 1} {
+		w, err := New(Options{Dir: dir, Stream: stream})
+		if err != nil {
+			t.Fatalf("new writer: %v", err)
+		}
+		rejections := make([]sink.Rejection, records)
+		for i := range rejections {
+			rejections[i] = rejection("k", "refused")
+		}
+		if err := w.Record(t.Context(), rejections); err != nil {
+			t.Fatalf("record: %v", err)
+		}
+		w.Close()
+	}
+
+	if got, err := Count(dir, "orders_to_es"); err != nil || got != 2 {
+		t.Errorf("count for one stream = %d, %v; want 2", got, err)
+	}
+	if got, err := Count(dir, ""); err != nil || got != 3 {
+		t.Errorf("count for every stream = %d, %v; want 3", got, err)
+	}
+}
+
+// The usual case, and the one worth being sure about: nothing refused, no directory yet,
+// and no error to explain away.
+func TestCountIsZeroWhenNothingWasRefused(t *testing.T) {
+	count, err := Count(filepath.Join(t.TempDir(), "never-created"), "orders_to_es")
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("count = %d, want 0", count)
+	}
+}
+
+// A stream name reaches a glob pattern, and one stream's count must not include another's
+// merely because the names share a prefix.
+func TestCountDoesNotCountAnotherStreamWithASharedPrefix(t *testing.T) {
+	dir := t.TempDir()
+	for _, stream := range []string{"orders", "orders_archive"} {
+		w, err := New(Options{Dir: dir, Stream: stream})
+		if err != nil {
+			t.Fatalf("new writer: %v", err)
+		}
+		if err := w.Record(t.Context(), []sink.Rejection{rejection("1", "refused")}); err != nil {
+			t.Fatalf("record: %v", err)
+		}
+		w.Close()
+	}
+
+	if got, err := Count(dir, "orders"); err != nil || got != 1 {
+		t.Errorf("count = %d, %v; want only this stream's single record", got, err)
 	}
 }

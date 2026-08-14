@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -203,6 +204,70 @@ func (w *Writer) Close() error {
 	err := w.file.Close()
 	w.file = nil
 	return err
+}
+
+// Files lists a stream's dead letter files, current and rotated, oldest name first.
+//
+// A missing directory is not an error: nothing has been refused, which is the state
+// everything hopes to be in.
+func Files(dir, stream string) ([]string, error) {
+	if dir == "" {
+		return nil, nil
+	}
+
+	pattern := filepath.Join(dir, "*.jsonl*")
+	if stream != "" {
+		pattern = filepath.Join(dir, stream+".jsonl*")
+	}
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("dlq: list %s: %w", dir, err)
+	}
+	sort.Strings(matches)
+	return matches, nil
+}
+
+// Count reports how many documents a stream has had refused, across rotated files.
+//
+// Records are counted rather than parsed: any value above zero already means the
+// destination is missing rows, and a file being unreadable in part must not hide the
+// rest of a count that says so.
+func Count(dir, stream string) (int, error) {
+	files, err := Files(dir, stream)
+	if err != nil {
+		return 0, err
+	}
+
+	total := 0
+	for _, path := range files {
+		n, err := countLines(path)
+		if err != nil {
+			return total, err
+		}
+		total += n
+	}
+	return total, nil
+}
+
+func countLines(path string) (int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, fmt.Errorf("dlq: open %s: %w", path, err)
+	}
+	defer f.Close()
+
+	count := 0
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 16<<20)
+	for scanner.Scan() {
+		if strings.TrimSpace(scanner.Text()) != "" {
+			count++
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return count, fmt.Errorf("dlq: read %s: %w", path, err)
+	}
+	return count, nil
 }
 
 // Read loads every record from a file.
