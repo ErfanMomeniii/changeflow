@@ -99,6 +99,7 @@ var Vars = []string{
 	"server_id",
 	"binlog_expire_logs_seconds",
 	"log_replica_updates",
+	"binlog_row_value_options",
 }
 
 // Evaluate applies every check to a set of global variables and SHOW GRANTS
@@ -151,6 +152,7 @@ func Evaluate(vars map[string]string, grants []string) Report {
 			"Without it, statements unsafe for GTID replication are allowed, which can produce a GTID set we cannot reason about."),
 	)
 
+	r.Checks = append(r.Checks, partialJSONCheck(get))
 	r.Checks = append(r.Checks, serverIDCheck(get))
 	r.Checks = append(r.Checks, retentionCheck(get))
 	r.Checks = append(r.Checks,
@@ -163,6 +165,41 @@ func Evaluate(vars map[string]string, grants []string) Report {
 	}
 
 	return r
+}
+
+// partialJSONCheck rejects a server that logs JSON updates as diffs.
+//
+// With binlog_row_value_options=PARTIAL_JSON an UPDATE carries the change to a JSON
+// column rather than its new value, and applying a diff means holding the previous
+// document, which a sink does not give back. The failure is silent: the column would
+// arrive as a description of a change instead of a document.
+//
+// A server that does not have the variable at all cannot be logging diffs, so its
+// absence passes.
+func partialJSONCheck(get func(string) (string, bool)) Check {
+	const why = "PARTIAL_JSON logs an UPDATE to a JSON column as a diff rather than the new value, " +
+		"which cannot be applied to a destination that holds only the current document. " +
+		"The result is a column carrying a description of a change instead of a document, with nothing reporting it."
+
+	got, ok := get("binlog_row_value_options")
+	if !ok {
+		// Older servers have no such setting, so there is nothing to be wrong.
+		return Check{Name: "binlog_row_value_options", Want: "empty", Got: "<unsupported>", OK: true, Severity: Required, Why: why}
+	}
+
+	trimmed := strings.TrimSpace(got)
+	shown := trimmed
+	if shown == "" {
+		shown = "empty"
+	}
+	return Check{
+		Name:     "binlog_row_value_options",
+		Want:     "empty",
+		Got:      shown,
+		OK:       trimmed == "",
+		Severity: Required,
+		Why:      why,
+	}
 }
 
 // serverCheck rejects servers whose replication protocol we do not speak.

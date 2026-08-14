@@ -15,6 +15,7 @@ func goodVars() map[string]string {
 		"server_id":                  "1",
 		"binlog_expire_logs_seconds": "604800",
 		"log_replica_updates":        "ON",
+		"binlog_row_value_options":   "",
 	}
 }
 
@@ -302,5 +303,52 @@ func TestReportGetExposesObservedValues(t *testing.T) {
 	}
 	if _, ok := r.Get("no_such_check"); ok {
 		t.Fatal("expected missing check to report absent")
+	}
+}
+
+// PARTIAL_JSON turns an UPDATE to a JSON column into a diff. Nothing downstream can
+// apply one, and nothing would report that a document had been replaced by a
+// description of a change, so this has to be caught before a stream starts.
+func TestEvaluateRejectsPartialJSONLogging(t *testing.T) {
+	vars := goodVars()
+	vars["binlog_row_value_options"] = "PARTIAL_JSON"
+
+	r := Evaluate(vars, goodGrants())
+
+	if r.OK() {
+		t.Fatal("a server logging JSON diffs was accepted")
+	}
+	c := find(t, r, "binlog_row_value_options")
+	if c.OK || c.Severity != Required {
+		t.Errorf("check = %+v, want a required failure", c)
+	}
+	if c.Got != "PARTIAL_JSON" {
+		t.Errorf("got = %q, want the offending value reported back", c.Got)
+	}
+}
+
+// The default is empty, and an empty value has to read as such rather than as a blank
+// in the output.
+func TestEvaluateReportsAnEmptyRowValueOptionsReadably(t *testing.T) {
+	c := find(t, Evaluate(goodVars(), goodGrants()), "binlog_row_value_options")
+
+	if !c.OK {
+		t.Errorf("the default was reported as a failure: %+v", c)
+	}
+	if c.Got != "empty" {
+		t.Errorf("got = %q, want it spelled out", c.Got)
+	}
+}
+
+// A server too old to have the setting cannot be logging diffs, so its absence is not a
+// problem to report.
+func TestEvaluateAcceptsAServerWithoutRowValueOptions(t *testing.T) {
+	vars := goodVars()
+	delete(vars, "binlog_row_value_options")
+
+	r := Evaluate(vars, goodGrants())
+
+	if c := find(t, r, "binlog_row_value_options"); !c.OK {
+		t.Errorf("an absent setting was treated as a failure: %+v", c)
 	}
 }
