@@ -1327,6 +1327,31 @@ func (e *env) countViaAlias(from, to uint64) int {
 }
 
 // aliasTargets reports which indices the read alias resolves to.
+// indexSettings returns an index's declared settings, which is how a test sees what a scan
+// relaxed and whether it was put back.
+func (e *env) indexSettings(index string) map[string]any {
+	e.t.Helper()
+
+	status, payload := e.esRequest(http.MethodGet, "/"+index+"/_settings", "")
+	if status >= 300 {
+		e.t.Fatalf("read settings of %s: status %d: %s", index, status, payload)
+	}
+
+	var byIndex map[string]struct {
+		Settings struct {
+			Index map[string]any `json:"index"`
+		} `json:"settings"`
+	}
+	if err := json.Unmarshal([]byte(payload), &byIndex); err != nil {
+		e.t.Fatalf("decode settings of %s: %v", index, err)
+	}
+	for _, entry := range byIndex {
+		return entry.Settings.Index
+	}
+	e.t.Fatalf("no settings returned for %s", index)
+	return nil
+}
+
 func (e *env) aliasTargets() []string {
 	e.t.Helper()
 
@@ -1417,4 +1442,121 @@ func TestRebuildFillsANewIndexAndMovesReaders(t *testing.T) {
 		doc, found := e.document(fmt.Sprint(firstID))
 		return found && doc["status"] == "shipped"
 	})
+}
+
+// A scan turns off refreshing and replication to fill an index quickly. Leaving either off
+// would be worse than the time it saved: an index that never refreshes answers searches
+// with nothing, and one with no replicas has no redundancy.
+func TestASnapshotRestoresTheSettingsItRelaxed(t *testing.T) {
+	e := setup(t)
+
+	const firstID = 28000
+	const rows = 40
+	for i := 0; i < rows; i++ {
+		e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (?,7,'paid',1.00)", firstID+i)
+	}
+
+	p := e.startWithSnapshot()
+	e.waitFor("the scan to fill the index", func() bool {
+		return e.countInRange(firstID, firstID+rows-1) == rows
+	})
+	// The alias moves only after a complete scan, so waiting for it is how the test knows
+	// the scan finished rather than merely produced enough rows.
+	e.waitFor("readers to be pointed at the scanned index", func() bool {
+		targets := e.aliasTargets()
+		return len(targets) == 1 && targets[0] == e.writeIndex
+	})
+	p.stop()
+
+	settings := e.indexSettings(e.writeIndex)
+	if got := settings["refresh_interval"]; got != nil {
+		t.Errorf("refresh_interval = %v, want it back to the cluster default the index was created with", got)
+	}
+	if got := fmt.Sprint(settings["number_of_replicas"]); got != "0" {
+		t.Errorf("number_of_replicas = %v, want the 0 the index declared", got)
+	}
+
+	// Searchable without the test forcing a refresh, which is what readers being moved
+	// to this index depends on.
+	e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (?,7,'paid',1.00)", firstID+rows)
+	e.start()
+	deadline := time.Now().Add(settleTimeout)
+	found := false
+	for time.Now().Before(deadline) && !found {
+		_, found = e.document(fmt.Sprint(firstID + rows))
+		time.Sleep(500 * time.Millisecond)
+	}
+	if !found {
+		t.Errorf("a document was not searchable without an explicit refresh:\n%s", e.processLog())
+	}
+}
+
+// A rebuild that is interrupted must leave readers exactly where they were. Moving them to
+// a half-filled index would show a partial table, and there would be nothing to move back
+// to that is any better.
+func TestAnInterruptedRebuildLeavesReadersOnTheOldIndex(t *testing.T) {
+	e := setup(t)
+
+	const firstID = 29000
+	const rows = 300
+	for i := 0; i < rows; i++ {
+		e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (?,7,'paid',1.00)", firstID+i)
+	}
+
+	// Fill the first index and put readers on it.
+	first := e.startWithSnapshot()
+	e.waitFor("the original index to be filled", func() bool {
+		return e.countInRange(firstID, firstID+rows-1) == rows
+	})
+	e.waitFor("readers to be pointed at the original index", func() bool {
+		targets := e.aliasTargets()
+		return len(targets) == 1 && targets[0] == e.index
+	})
+	originalIndex := e.writeIndex
+	first.stop()
+
+	// Rebuild into a new index, and kill the process partway through the scan.
+	e.resnapshot()
+	e.writeIndex = e.index + "_v2"
+	e.config = e.writeConfigWith(true)
+	e.createIndex()
+
+	rebuild := e.launch()
+	interrupted := false
+	deadline := time.Now().Add(settleTimeout)
+	for time.Now().Before(deadline) && !interrupted {
+		// Counted through an explicit refresh, since the scan has refreshing turned off
+		// while it fills an index no reader is using.
+		e.refreshIndex(e.writeIndex)
+		if n := e.countInRange(firstID, firstID+rows-1); n > 0 && n < rows {
+			interrupted = true
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	rebuild.kill()
+	if !interrupted {
+		// Killing after the scan finished would prove nothing, so say so rather than
+		// reporting a pass or a misleading failure.
+		t.Fatalf("the scan never observed as partial, so the interruption this test needs did not happen:\n%s",
+			e.processLog())
+	}
+
+	// Readers are still on the complete index, not the partial one.
+	if targets := e.aliasTargets(); len(targets) != 1 || targets[0] != originalIndex {
+		t.Fatalf("readers are on %v, want them left on %s until the rebuild finished", targets, originalIndex)
+	}
+	if got := e.countViaAlias(firstID, firstID+rows-1); got != rows {
+		t.Errorf("readers see %d of %d rows through the alias during a rebuild", got, rows)
+	}
+
+	// Resuming finishes the rebuild and then, and only then, moves readers.
+	e.launch()
+	e.waitFor("the rebuild to finish and readers to be moved", func() bool {
+		targets := e.aliasTargets()
+		return len(targets) == 1 && targets[0] == e.writeIndex
+	})
+	if got := e.countViaAlias(firstID, firstID+rows-1); got != rows {
+		t.Errorf("readers see %d of %d rows after the rebuild finished", got, rows)
+	}
 }

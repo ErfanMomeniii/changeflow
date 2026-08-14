@@ -241,6 +241,14 @@ jobs:
         if: ${{ !cancelled() }}
         run: go test ./test/e2e/ -count=1 -v -timeout 8m -run TestClickHouseConvergesAfterAnAbruptKill
 
+      - name: "e2e: a snapshot restores the settings it relaxed"
+        if: ${{ !cancelled() }}
+        run: go test ./test/e2e/ -count=1 -v -timeout 8m -run TestASnapshotRestoresTheSettingsItRelaxed
+
+      - name: "e2e: an interrupted rebuild leaves readers on the old index"
+        if: ${{ !cancelled() }}
+        run: go test ./test/e2e/ -count=1 -v -timeout 10m -run TestAnInterruptedRebuildLeavesReadersOnTheOldIndex
+
       - name: "e2e: a rebuild fills a new index and moves readers"
         if: ${{ !cancelled() }}
         run: go test ./test/e2e/ -count=1 -v -timeout 10m -run TestRebuildFillsANewIndexAndMovesReaders
