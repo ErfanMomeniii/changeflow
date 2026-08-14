@@ -27,6 +27,7 @@ import (
 	"github.com/ErfanMomeniii/changeflow/internal/config"
 	"github.com/ErfanMomeniii/changeflow/internal/preflight"
 	"github.com/ErfanMomeniii/changeflow/internal/schema"
+	"github.com/ErfanMomeniii/changeflow/internal/sink/dlq"
 	"github.com/ErfanMomeniii/changeflow/internal/supervisor"
 	"github.com/ErfanMomeniii/changeflow/internal/tail"
 )
@@ -78,8 +79,8 @@ Usage:
   changeflow run -c <config.yaml> [--stream <name>]
         Replicate every configured stream, or one named stream, until interrupted.
 
-  changeflow status -c <config.yaml>
-        Report each stream's position, lag, and snapshot state.
+  changeflow status -c <config.yaml> [--dlq-dir <dir>]
+        Report each stream's position, lag, snapshot state, and refused documents.
 
   changeflow validate -c <config.yaml>
         Check a configuration file without connecting to anything.
@@ -313,6 +314,7 @@ func runStream(ctx context.Context, args []string) error {
 func runStatus(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	path := fs.String("c", "changeflow.yaml", "path to the configuration file")
+	dlqDir := fs.String("dlq-dir", "", "also report how many documents each stream has had refused")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -336,20 +338,45 @@ func runStatus(ctx context.Context, args []string) error {
 	}
 
 	now := time.Now()
-	fmt.Printf("%-28s %-10s %-12s %s\n", "STREAM", "LAG", "SNAPSHOT", "POSITION")
+	header := "%-28s %-10s %-12s %s\n"
+	columns := []any{"STREAM", "LAG", "SNAPSHOT", "POSITION"}
+	if *dlqDir != "" {
+		header = "%-28s %-10s %-12s %-8s %s\n"
+		columns = []any{"STREAM", "LAG", "SNAPSHOT", "REFUSED", "POSITION"}
+	}
+	fmt.Printf(header, columns...)
+
+	// row prints one stream, with the refused count only when a directory was given: a
+	// zero from a directory nobody passed would read as a reassurance nothing checked.
+	row := func(name, lag, snapshot, position string) error {
+		if *dlqDir == "" {
+			fmt.Printf(header, name, lag, snapshot, position)
+			return nil
+		}
+		refused, err := dlq.Count(*dlqDir, name)
+		if err != nil {
+			return err
+		}
+		fmt.Printf(header, name, lag, snapshot, strconv.Itoa(refused), position)
+		return nil
+	}
 
 	// Before any stream has run the table does not exist yet, which is worth
 	// reporting plainly rather than as a failure.
 	if _, err := store.Load(ctx, cfg.StreamNames()[0]); errors.Is(err, checkpoint.ErrNotInitialized) {
 		for _, name := range cfg.StreamNames() {
-			fmt.Printf("%-28s %-10s %-12s %s\n", name, "-", "not started", "-")
+			if err := row(name, "-", "not started", "-"); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
 	for _, name := range cfg.StreamNames() {
 		cp, err := store.Load(ctx, name)
 		if errors.Is(err, checkpoint.ErrNotFound) {
-			fmt.Printf("%-28s %-10s %-12s %s\n", name, "-", "not started", "-")
+			if err := row(name, "-", "not started", "-"); err != nil {
+				return err
+			}
 			continue
 		}
 		if err != nil {
@@ -366,7 +393,9 @@ func runStatus(ctx context.Context, args []string) error {
 		} else if cp.SnapshotRowsTotal > 0 {
 			snapshot = fmt.Sprintf("%d%%", 100*cp.SnapshotRowsDone/cp.SnapshotRowsTotal)
 		}
-		fmt.Printf("%-28s %-10s %-12s %s\n", name, lag, snapshot, cp.GTIDSet)
+		if err := row(name, lag, snapshot, cp.GTIDSet); err != nil {
+			return err
+		}
 		if cp.LastError != "" {
 			// Under the row rather than in a column: it is the one field worth reading in
 			// full, and a stopped stream is why anyone runs this.
