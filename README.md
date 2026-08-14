@@ -215,11 +215,15 @@ before the position advances, so the stream continues and nothing is dropped sil
 line records the stream, key, version, status, and reason.
 
 ```
-ls /var/lib/changeflow/dlq/
+changeflow status -c changeflow.yaml --dlq-dir /var/lib/changeflow/dlq
+
+STREAM                       LAG        SNAPSHOT     REFUSED  POSITION
+orders_to_es                 1.2s       done         3        3e11fa47-...:1-90421
 ```
 
-`changeflow_dead_lettered_total` above zero means those rows are missing from the
-destination. Fix the cause — usually a mapping that cannot hold a value — then rebuild.
+`changeflow_dead_lettered_total`, or that column, above zero means those rows are missing
+from the destination. Read the files for the reason, fix the cause — usually a mapping that
+cannot hold a value — then rebuild.
 
 ### Changing a mapping
 
@@ -251,6 +255,33 @@ scan.
 A rebuild is also how a lost checkpoint is recovered from, and the only way to remove rows
 deleted while the process was stopped for longer than the binlog is retained. Those deletes
 are no longer in the binlog, so only a rescan can reconcile them.
+
+For ClickHouse the shape is the same, with `EXCHANGE TABLES` in place of the alias move.
+Readers keep querying `analytics.orders` throughout, and the swap is one atomic statement.
+Unlike the alias move it is not performed for you, because a name change in ClickHouse
+affects writers as well as readers: the stream has to be stopped across it, or it would carry
+on writing to the table that was just swapped out.
+
+```
+changeflow generate-schema -c changeflow.yaml --stream orders_to_clickhouse
+# review it, then apply the DDL under a new name: analytics.orders_v2
+
+# point sink.table at analytics.orders_v2 and fill it, while readers stay on analytics.orders
+changeflow resnapshot -c changeflow.yaml --stream orders_to_clickhouse --confirm
+changeflow run -c changeflow.yaml --stream orders_to_clickhouse
+# wait for `changeflow status` to show the scan done and lag small, then stop it
+```
+```sql
+-- Atomic, and reversible by running it again. Needs the Atomic database engine, the default.
+EXCHANGE TABLES analytics.orders AND analytics.orders_v2;
+```
+```
+# point sink.table back at analytics.orders and start again: it resumes from its checkpoint,
+# so changes made while it was stopped are applied to the table readers are now using
+changeflow run -c changeflow.yaml --stream orders_to_clickhouse
+```
+
+`analytics.orders_v2` now holds the previous data, which is what makes the change reversible.
 
 ### Adding a column
 
