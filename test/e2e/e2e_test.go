@@ -65,6 +65,9 @@ type env struct {
 	// created records the indices this test made, so teardown removes them all.
 	created      []string
 	indexCreated bool
+	// snapshotRate throttles a table scan, for the tests that need to observe one in
+	// progress rather than only its result.
+	snapshotRate int
 }
 
 func setup(t *testing.T) *env {
@@ -237,10 +240,15 @@ func (e *env) createIndexFor(stream, index string) {
 	e.created = append(e.created, index)
 }
 
-// createIndexManually installs a hand-written mapping for the one test that needs an
-// unsuitable one: user_id is declared as a byte, so 7 indexes and 99999 does not.
-// That makes the destination refuse a specific row rather than a whole field, which is
-// what a dead letter test needs.
+// createIndexManually installs a hand-written mapping for the one test that needs a
+// destination which refuses a particular document.
+//
+// Every field has the type the stream sends, so this passes the startup check that
+// compares the two — a mapping that disagreed on a type would never get as far as
+// writing anything. What it narrows is the accepted form of one nullable field:
+// placed_at takes a plain date, so a row carrying a time of day is refused while every
+// row that leaves it null is accepted. That is what a dead letter test needs: one
+// document turned away, and a stream that carries on.
 func (e *env) createIndexManually() {
 	e.t.Helper()
 
@@ -250,14 +258,14 @@ func (e *env) createIndexManually() {
 	    "dynamic": "strict",
 	    "properties": {
 	      "id":           {"type": "unsigned_long"},
-	      "user_id":      {"type": "byte"},
+	      "user_id":      {"type": "unsigned_long"},
 	      "status":       {"type": "keyword"},
 	      "channels":     {"type": "keyword"},
 	      "total_amount": {"type": "keyword"},
 	      "is_gift":      {"type": "boolean"},
 	      "note_latin1":  {"type": "keyword"},
 	      "metadata":     {"type": "object", "enabled": false},
-	      "placed_at":    {"type": "date"},
+	      "placed_at":    {"type": "date", "format": "strict_date"},
 	      "updated_at":   {"type": "date"}
 	    }
 	  }
@@ -315,7 +323,7 @@ streams:
     table: shop.orders
     snapshot:
       enabled: %t
-      chunk_size: 20
+      chunk_size: 20%s
     batch:
       max_rows: 50
       max_bytes: 1MiB
@@ -329,12 +337,20 @@ streams:
     mapping:
       key: [id]
       exclude: [internal_note]
-`, e.mysqlDSN, 7000+time.Now().UnixNano()%900, e.metaDSN, e.streamName(), snapshot, e.esURL, e.writeIndex, e.alias)
+`, e.mysqlDSN, 7000+time.Now().UnixNano()%900, e.metaDSN, e.streamName(), snapshot, e.rateLimit(), e.esURL, e.writeIndex, e.alias)
 
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		e.t.Fatalf("write config: %v", err)
 	}
 	return path
+}
+
+// rateLimit renders the scan throttle, or nothing when the scan should run flat out.
+func (e *env) rateLimit() string {
+	if e.snapshotRate <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("\n      max_rate_rows_per_sec: %d", e.snapshotRate)
 }
 
 func (e *env) writeClickHouseConfig(snapshot bool) string {
@@ -1091,8 +1107,9 @@ func TestRefusedDocumentGoesToTheDeadLetterQueueAndStreamContinues(t *testing.T)
 
 	e.start()
 
-	// Refused: 99999 does not fit a byte.
-	e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (25000,99999,'paid',1.00)")
+	// Refused: the index takes a plain date for this field, and this row has a time.
+	e.exec(`INSERT INTO orders (id,user_id,status,total_amount,placed_at)
+	        VALUES (25000,7,'paid',1.00,'2026-08-11 10:30:00.000')`)
 	// Accepted: the stream must carry on past the refusal.
 	e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (25001,7,'paid',1.00)")
 
@@ -1472,8 +1489,9 @@ func TestASnapshotRestoresTheSettingsItRelaxed(t *testing.T) {
 	if got := settings["refresh_interval"]; got != nil {
 		t.Errorf("refresh_interval = %v, want it back to the cluster default the index was created with", got)
 	}
+	// The replica count is the index's own, and a scan has no business changing it.
 	if got := fmt.Sprint(settings["number_of_replicas"]); got != "0" {
-		t.Errorf("number_of_replicas = %v, want the 0 the index declared", got)
+		t.Errorf("number_of_replicas = %v, want the 0 the index was created with", got)
 	}
 
 	// Searchable without the test forcing a refresh, which is what readers being moved
@@ -1516,7 +1534,12 @@ func TestAnInterruptedRebuildLeavesReadersOnTheOldIndex(t *testing.T) {
 	first.stop()
 
 	// Rebuild into a new index, and kill the process partway through the scan.
+	//
+	// Throttled, because an unthrottled scan of this table finishes in a few hundred
+	// milliseconds: the test would be racing it rather than interrupting it, and would
+	// report a failure of its own making.
 	e.resnapshot()
+	e.snapshotRate = 50
 	e.writeIndex = e.index + "_v2"
 	e.config = e.writeConfigWith(true)
 	e.createIndex()
@@ -1558,5 +1581,12 @@ func TestAnInterruptedRebuildLeavesReadersOnTheOldIndex(t *testing.T) {
 	})
 	if got := e.countViaAlias(firstID, firstID+rows-1); got != rows {
 		t.Errorf("readers see %d of %d rows after the rebuild finished", got, rows)
+	}
+
+	// The killed scan left refreshing off. Had the resumed scan taken that for the index's
+	// own setting, readers would now be pointed at an index that never refreshes, and this
+	// is the only place that shows it: every count above forces a refresh of its own.
+	if got := e.indexSettings(e.writeIndex)["refresh_interval"]; got != nil {
+		t.Errorf("refresh_interval = %v after the rebuild, want the cluster default", got)
 	}
 }
