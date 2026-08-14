@@ -40,6 +40,7 @@ On the source:
 | `binlog_row_metadata` | `FULL` | Column names come from the binlog rather than from guessing |
 | `gtid_mode` | `ON` | A GTID set is a position that survives a failover |
 | `enforce_gtid_consistency` | `ON` | Required alongside `gtid_mode` |
+| `binlog_row_value_options` | empty | `PARTIAL_JSON` logs a JSON update as a diff, which cannot be applied to a document |
 | `server_id` | unique | Colliding with another replica disconnects both |
 
 Check a server before configuring anything else:
@@ -239,9 +240,11 @@ changeflow run -c changeflow.yaml --stream orders_to_es
 ```
 
 While the scan fills `orders-v2`, readers stay on `orders-v1` through the alias. Refreshing
-and replication are turned off for the scan and restored afterwards, which is a large part of
-how long a rebuild takes. When the scan finishes, one atomic request moves the alias, and
-`orders-v1` is still there to move back to:
+is turned off for the scan and restored afterwards, which is a large part of how long a
+rebuild takes; the replica count is left as the index was created with, so pass
+`--replicas 0` to `generate-schema` if the rebuild should also skip replication. When the
+scan finishes, one atomic request moves the alias, and `orders-v1` is still there to move
+back to:
 
 ```
 curl -XPOST $ES/_aliases -H 'Content-Type: application/json' -d '{"actions":[
