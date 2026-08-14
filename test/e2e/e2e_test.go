@@ -528,8 +528,33 @@ func (e *env) launchAll() *process {
 	return e.launchStream("")
 }
 
-// launchStream starts the process, naming one stream or, given an empty name, all of them.
+// launchStream starts the process and waits until it is replicating.
 func (e *env) launchStream(stream string) *process {
+	e.t.Helper()
+	return e.launchStreamUntil(stream, "replication started")
+}
+
+// launchScanning starts the process and returns while the table scan is still running.
+//
+// Replication begins only once a scan has finished, so a test whose subject is what
+// happens during a scan cannot wait for that: it would be handed a process that had
+// already done the work, and would pass without ever exercising the case.
+func (e *env) launchScanning() *process {
+	e.t.Helper()
+	e.ensureIndex()
+	return e.launchStreamUntil(e.streamName(), "starting a table scan", "resuming a table scan")
+}
+
+// startScanning writes a configuration with the initial scan enabled and launches into it.
+func (e *env) startScanning() *process {
+	e.t.Helper()
+	e.config = e.writeConfigWith(true)
+	return e.launchScanning()
+}
+
+// launchStreamUntil starts the process, naming one stream or, given an empty name, all of
+// them, and waits for any of the given markers to appear in its log.
+func (e *env) launchStreamUntil(stream string, markers ...string) *process {
 	e.t.Helper()
 
 	args := []string{"run", "-c", e.config, "--dlq-dir", e.dlqDir}
@@ -550,19 +575,22 @@ func (e *env) launchStream(stream string) *process {
 	e.running = p
 	e.t.Cleanup(func() { p.stop() })
 
-	// Wait for replication to be registered, otherwise the test's writes would
-	// happen before the process is listening and never appear in the stream.
+	// Wait for the process to reach the state the caller needs. Returning earlier would
+	// have a test's writes happen before anything was listening for them.
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		if strings.Contains(log.String(), "replication started") {
-			return p
+		out := log.String()
+		for _, marker := range markers {
+			if strings.Contains(out, marker) {
+				return p
+			}
 		}
 		if p.exited() {
-			e.t.Fatalf("changeflow exited during startup:\n%s", log.String())
+			e.t.Fatalf("changeflow exited during startup:\n%s", out)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	e.t.Fatalf("changeflow did not start replicating within 30s:\n%s", log.String())
+	e.t.Fatalf("changeflow did not reach %v within 30s:\n%s", markers, log.String())
 	return nil
 }
 
@@ -1029,7 +1057,12 @@ func TestInterruptedBackfillResumes(t *testing.T) {
 		e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (?,7,'paid',1.00)", firstID+i)
 	}
 
-	p := e.startWithSnapshot()
+	// Throttled, because an unthrottled scan of this table finishes between two polls:
+	// the kill would land after it, and the test would pass without interrupting
+	// anything.
+	e.snapshotRate = 60
+	p := e.startScanning()
+
 	// Kill once some rows have landed but before the scan can have finished.
 	e.waitFor("the scan to start delivering rows", func() bool {
 		return e.countInRange(firstID, firstID+119) > 0
@@ -1037,8 +1070,11 @@ func TestInterruptedBackfillResumes(t *testing.T) {
 	p.kill()
 	killedAt := e.countInRange(firstID, firstID+119)
 	t.Logf("killed with %d of 120 rows backfilled", killedAt)
+	if killedAt >= 120 {
+		t.Fatalf("the scan had already finished, so nothing was interrupted")
+	}
 
-	e.startWithSnapshot()
+	e.startScanning()
 	e.waitFor("the backfill to complete after a restart", func() bool {
 		return e.countInRange(firstID, firstID+119) == 120
 	})
@@ -1054,17 +1090,28 @@ func TestConcurrentChangeWinsOverTheScannedRow(t *testing.T) {
 		e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (?,7,'draft',1.00)", firstID+i)
 	}
 
-	e.startWithSnapshot()
+	// Throttled so the scan is still running when the change is made. Unthrottled it
+	// finishes first, and the change would be an ordinary update to a complete index
+	// rather than the race this exists to test.
+	e.snapshotRate = 60
+	e.startScanning()
 
-	// Change a row while the scan is in progress. Whichever order the two reach the
+	e.waitFor("the scan to start delivering rows", func() bool {
+		return e.countInRange(firstID, firstID+199) > 0
+	})
+	if scanned := e.countInRange(firstID, firstID+199); scanned >= 200 {
+		t.Fatalf("the scan finished before the change could be made, so nothing raced")
+	}
+
+	// Change a row the scan has not reached yet. Whichever order the two reach the
 	// destination, the change must be the version that survives.
-	e.exec("UPDATE orders SET status='cancelled' WHERE id=?", firstID+150)
+	e.exec("UPDATE orders SET status='cancelled' WHERE id=?", firstID+199)
 
 	e.waitFor("the whole table to be backfilled", func() bool {
 		return e.countInRange(firstID, firstID+199) == 200
 	})
 	e.waitFor("the concurrent change to be the surviving version", func() bool {
-		doc, found := e.document(fmt.Sprint(firstID + 150))
+		doc, found := e.document(fmt.Sprint(firstID + 199))
 		return found && doc["status"] == "cancelled"
 	})
 }
@@ -1544,7 +1591,7 @@ func TestAnInterruptedRebuildLeavesReadersOnTheOldIndex(t *testing.T) {
 	e.config = e.writeConfigWith(true)
 	e.createIndex()
 
-	rebuild := e.launch()
+	rebuild := e.launchScanning()
 	interrupted := false
 	deadline := time.Now().Add(settleTimeout)
 	for time.Now().Before(deadline) && !interrupted {
@@ -1574,7 +1621,7 @@ func TestAnInterruptedRebuildLeavesReadersOnTheOldIndex(t *testing.T) {
 	}
 
 	// Resuming finishes the rebuild and then, and only then, moves readers.
-	e.launch()
+	e.launchScanning()
 	e.waitFor("the rebuild to finish and readers to be moved", func() bool {
 		targets := e.aliasTargets()
 		return len(targets) == 1 && targets[0] == e.writeIndex
