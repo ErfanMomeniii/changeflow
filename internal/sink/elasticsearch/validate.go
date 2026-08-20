@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -134,30 +133,16 @@ func typesCompatible(want string, actual mappedField) bool {
 
 // fetchMapping reads the index's declared properties.
 func (s *Sink) fetchMapping(ctx context.Context) (map[string]mappedField, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.nextAddress()+"/"+s.opts.Index+"/_mapping", nil)
-	if err != nil {
-		return nil, err
-	}
-	if s.opts.Username != "" {
-		req.SetBasicAuth(s.opts.Username, s.opts.Password)
-	}
-
-	resp, err := s.client.Do(req)
+	status, payload, err := s.do(ctx, http.MethodGet, "/"+s.opts.Index+"/_mapping", nil)
 	if err != nil {
 		return nil, fmt.Errorf("elasticsearch: read the mapping of %s: %w", s.opts.Index, err)
 	}
-	defer resp.Body.Close()
-
-	payload, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("elasticsearch: read the mapping response: %w", err)
-	}
 
 	switch {
-	case resp.StatusCode == http.StatusNotFound:
+	case status == http.StatusNotFound:
 		return nil, fmt.Errorf("elasticsearch: index %s does not exist; create it from `changeflow generate-schema` before starting", s.opts.Index)
-	case resp.StatusCode >= 300:
-		return nil, fmt.Errorf("elasticsearch: read the mapping of %s: status %d: %s", s.opts.Index, resp.StatusCode, snippet(payload))
+	case status >= 300:
+		return nil, fmt.Errorf("elasticsearch: read the mapping of %s: status %d: %s", s.opts.Index, status, snippet(payload))
 	}
 
 	// Keyed by index name, which differs from the requested name when an alias was

@@ -374,10 +374,9 @@ func (a alignment) row(values []any) cdc.Row {
 
 // alignment reconciles the event's shape with the table's current shape.
 //
-// A stale cached definition is reloaded first, since that is the likely cause. What
-// remains is genuine history: a row written before a column was added or dropped. Those
-// rows are aligned by name, because a column added in the middle of a table shifts every
-// position after it and decoding by position would attribute values to the wrong fields.
+// A stale cached definition is reloaded first. What remains is history — a row written
+// before a column was added or dropped — aligned by name, since a column added mid-table
+// shifts every position after it and decoding by position would misattribute values.
 func (s *Streamer) alignment(ctx context.Context, e *replication.RowsEvent, meta *schema.TableMeta) (alignment, error) {
 	if len(e.Rows) == 0 {
 		return alignment{meta: meta, direct: true}, nil

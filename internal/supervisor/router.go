@@ -13,19 +13,15 @@ import (
 
 // Router delivers each change to the streams configured for its table.
 //
-// One binlog connection serves every stream on a source. Ten streams would otherwise
-// cost the master ten dump threads and ten copies of the same binlog over the network,
-// for the same data.
-//
-// A table watched by two streams receives the event twice, once per stream, because each
-// has its own mapping, batching, and position.
+// One binlog connection serves every stream on a source, rather than one dump thread and
+// one copy of the binlog per stream. A table watched by two streams receives the event
+// twice, since each has its own mapping, batching, and position.
 type Router struct {
-	// byTable maps a lowercased database.table to the channels waiting for it.
+	// byTable is keyed by lowercased database.table.
 	byTable map[string][]chan cdc.ChangeEvent
 	// closeOnce guards Close, which the reader loop and a failure path may both reach.
 	closeOnce sync.Once
-	// channels is every channel, for closing them once.
-	channels []chan cdc.ChangeEvent
+	channels  []chan cdc.ChangeEvent
 }
 
 // NewRouter builds a router over the given table-to-channel assignments.
@@ -40,8 +36,7 @@ func (r *Router) Add(table string, out chan cdc.ChangeEvent) {
 	r.channels = append(r.channels, out)
 }
 
-// Tables returns every watched table, which is what the reader filters on so events for
-// anything else are discarded before being decoded further.
+// Tables returns every watched table, which is what the reader filters on.
 func (r *Router) Tables() []string {
 	tables := make([]string, 0, len(r.byTable))
 	for table := range r.byTable {
@@ -52,10 +47,9 @@ func (r *Router) Tables() []string {
 
 // Route delivers one event to every stream watching its table.
 //
-// Sending blocks when a stream's queue is full, which is how back pressure reaches the
-// reader. With a shared reader that pressure is shared: a slow destination on one stream
-// slows the others. That is the cost of one connection instead of many, and the queue
-// depth metric is what makes it visible.
+// Sending blocks when a queue is full, which is how back pressure reaches the reader.
+// With a shared reader that pressure is shared: a slow destination on one stream slows
+// the others, and the queue depth metric is what makes it visible.
 func (r *Router) Route(ctx context.Context, ev cdc.ChangeEvent) error {
 	if ev.Meta == nil {
 		return nil
@@ -72,8 +66,7 @@ func (r *Router) Route(ctx context.Context, ev cdc.ChangeEvent) error {
 	return nil
 }
 
-// Close closes every stream's channel, which is how each pipeline learns the source has
-// ended and flushes what it holds.
+// Close closes every queue, which is how each pipeline learns to flush and finish.
 func (r *Router) Close() {
 	r.closeOnce.Do(func() {
 		for _, out := range r.channels {
@@ -82,17 +75,12 @@ func (r *Router) Close() {
 	})
 }
 
-// sharedStartPosition picks the position a shared reader must start from to serve every
-// stream.
+// sharedStartPosition picks the position a shared reader must start from.
 //
-// It has to be a position no stream has passed, or a stream behind the others would never
-// receive the changes it still needs. Positions already applied by a stream ahead are
-// re-delivered, which is harmless: versions only increase and the destination discards
-// anything not newer.
-//
-// When no position is contained in all the others the streams have diverged, which cannot
-// be reconciled by choosing between them. Rather than silently skipping changes for the
-// stream that is behind, this refuses and says how to proceed.
+// It has to be one no stream has passed, or a stream behind the others would never receive
+// the changes it still needs. Re-delivering what a stream ahead already applied is
+// harmless, since versions only increase. Streams that cannot be reconciled this way are
+// refused rather than silently having changes skipped.
 func sharedStartPosition(positions map[string]string) (string, error) {
 	if len(positions) == 0 {
 		return "", fmt.Errorf("supervisor: no stream provided a start position")

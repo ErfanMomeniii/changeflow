@@ -81,11 +81,9 @@ func validateIdentifier(name string) error {
 
 // EnsureSchema creates the checkpoint table if it does not exist.
 //
-// The existence check comes first, and not as an optimisation: MySQL refuses
-// CREATE TABLE IF NOT EXISTS without the CREATE privilege even when the table is
-// already there. Looking before creating is what lets one code path serve both a
-// fresh development database and a service whose table was applied by a migration
-// and which holds only the DML rights it needs to run.
+// The existence check is not an optimisation: MySQL refuses CREATE TABLE IF NOT EXISTS
+// without the CREATE privilege even when the table is there, so looking first is what lets
+// a service run on the DML rights it should be limited to.
 func (s *MySQLStore) EnsureSchema(ctx context.Context) error {
 	if s.schemaExists(ctx) {
 		return nil
@@ -242,12 +240,9 @@ const maxRecordedErrorLen = 1000
 
 // RecordError stores why a stream stopped, or clears it when given an empty reason.
 //
-// Narrow on purpose: a whole-row save would carry a position read before the stream
-// failed, which could move a checkpoint backwards. This touches one column and never a
-// position.
-//
-// A stream that has never checkpointed has no row to update, and that is not an error:
-// there is nothing about it to report yet.
+// One column, never a position: a whole-row save would carry a position read before the
+// failure and could move a checkpoint backwards. A stream with no row yet has nothing to
+// report, which is not an error.
 func (s *MySQLStore) RecordError(ctx context.Context, stream, reason string) error {
 	if err := validateStream(stream); err != nil {
 		return err
@@ -320,13 +315,11 @@ type StreamLock struct {
 // ErrStreamLocked reports that another session owns the stream.
 var ErrStreamLocked = errors.New("stream is already being processed elsewhere")
 
-// Lock claims exclusive ownership of a stream, so two processes cannot replicate
-// it at once. Running a stream twice would double-write and produce two replicas
-// contending for one server_id, and the resulting errors name neither culprit.
+// Lock claims exclusive ownership of a stream. Two processes replicating one stream
+// double-write and contend for a single server_id, with errors that name neither culprit.
 //
-// The lock lives on its own pinned connection: MySQL advisory locks are
-// session-scoped, so taking one from a pooled connection would release it as soon
-// as that connection returned to the pool.
+// On its own pinned connection, because MySQL advisory locks are session-scoped: taken
+// from the pool, the lock would be released the moment the connection went back.
 func (s *MySQLStore) Lock(ctx context.Context, stream string) (*StreamLock, error) {
 	if err := validateStream(stream); err != nil {
 		return nil, err

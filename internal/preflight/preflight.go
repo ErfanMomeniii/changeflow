@@ -169,13 +169,9 @@ func Evaluate(vars map[string]string, grants []string) Report {
 
 // partialJSONCheck rejects a server that logs JSON updates as diffs.
 //
-// With binlog_row_value_options=PARTIAL_JSON an UPDATE carries the change to a JSON
-// column rather than its new value, and applying a diff means holding the previous
-// document, which a sink does not give back. The failure is silent: the column would
-// arrive as a description of a change instead of a document.
-//
-// A server that does not have the variable at all cannot be logging diffs, so its
-// absence passes.
+// Applying a diff needs the previous document, which a sink does not give back, so the
+// column would silently hold a description of a change instead of a document. A server
+// without the variable cannot be logging diffs, so its absence passes.
 func partialJSONCheck(get func(string) (string, bool)) Check {
 	const why = "PARTIAL_JSON logs an UPDATE to a JSON column as a diff rather than the new value, " +
 		"which cannot be applied to a destination that holds only the current document. " +

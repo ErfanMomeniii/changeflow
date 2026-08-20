@@ -191,12 +191,9 @@ func (p *Plan) Fields() []string {
 // KeyNames returns the source columns forming the key.
 func (p *Plan) KeyNames() []string { return p.keyNames }
 
-// Apply turns one event into the writes it implies.
-//
-// Nearly always that is a single document. The exception is an update that
-// changes the key: the old document must be deleted, because nothing later will
-// ever mention that key again and it would otherwise remain in the destination
-// forever.
+// Apply turns one event into the writes it implies: one document, except for an update
+// that changes the key, where the old document must also be deleted — nothing later will
+// mention that key again, so it would remain in the destination forever.
 func (p *Plan) Apply(ev *cdc.ChangeEvent) ([]cdc.Doc, error) {
 	if ev == nil {
 		return nil, fmt.Errorf("transform: nil event")

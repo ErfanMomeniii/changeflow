@@ -5,14 +5,10 @@ import (
 	"sync"
 )
 
-// group runs several tasks and reports the first failure.
+// group runs several tasks and reports the first failure, cancelling the rest.
 //
-// Cancelling on the first error is the point: a stream that has stopped must not leave its
-// siblings running against a reader that is no longer being consumed, since the router would
-// block forever on its queue.
-//
-// errgroup from the extended libraries does the same thing, kept local to avoid a dependency
-// for thirty lines.
+// Cancelling matters: a stopped stream must not leave its siblings running against a
+// reader nobody is consuming, since the router would block forever on its queue.
 type group struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -26,7 +22,6 @@ func newGroup(parent context.Context) (*group, context.Context) {
 	return &group{cancel: cancel}, ctx
 }
 
-// run starts a task.
 func (g *group) run(task func() error) {
 	g.wg.Add(1)
 	go func() {
@@ -37,8 +32,6 @@ func (g *group) run(task func() error) {
 				g.first = err
 			}
 			g.mu.Unlock()
-			// Bring the others down, rather than leaving them blocked on a queue nobody
-			// is draining.
 			g.cancel()
 		}
 	}()

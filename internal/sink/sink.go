@@ -1,10 +1,8 @@
 // Package sink writes documents to a destination.
 //
-// A sink knows nothing about MySQL. It receives already-encoded documents and is
-// responsible for exactly one thing: applying them so that the result does not
-// depend on how many times, or in what order, a batch is delivered. Every sink
-// must satisfy that contract, because at-least-once delivery means a batch can
-// arrive twice and an older write can arrive after a newer one.
+// A sink knows nothing about MySQL. It receives encoded documents and applies them so the
+// result does not depend on how many times, or in what order, a batch arrives — which
+// at-least-once delivery makes unavoidable.
 package sink
 
 import (
@@ -16,31 +14,26 @@ import (
 
 // Sink applies batches of documents to a destination.
 type Sink interface {
-	// Write applies a batch. It returns a Result describing what happened to each
-	// document, and an error only when the batch as a whole could not be applied.
+	// Write applies a batch, reporting per-document outcomes in the Result and returning
+	// an error only when the batch as a whole failed.
 	//
-	// A returned error means the caller should retry the batch and must not
-	// advance its checkpoint. Per-document failures are reported in the Result
-	// instead, since one malformed row must not block the rest.
+	// An error means retry and do not advance the checkpoint. Per-document failures go in
+	// the Result, so one malformed row does not block the rest.
 	Write(ctx context.Context, docs []cdc.Doc) (Result, error)
 
-	// Close releases resources.
 	Close() error
 }
 
 // Result reports the outcome of one batch.
 type Result struct {
-	// Applied counts documents the destination accepted.
 	Applied int
 
-	// Stale counts documents the destination already had at an equal or newer
-	// version. These are expected after a restart replays a batch, and are the
-	// mechanism that makes replay harmless rather than a problem to solve.
+	// Stale counts documents the destination already had at an equal or newer version,
+	// which is what a replayed batch looks like and why replay is harmless.
 	Stale int
 
-	// Rejected holds documents the destination refused permanently, such as a
-	// value that conflicts with the index mapping. Retrying would fail again, so
-	// they belong in a dead letter queue.
+	// Rejected holds documents refused permanently, such as a value the mapping cannot
+	// hold. Retrying would fail again, so they belong in a dead letter queue.
 	Rejected []Rejection
 }
 
@@ -55,8 +48,8 @@ func (r Rejection) String() string {
 	return fmt.Sprintf("%s: status %d: %s", r.Doc.Key, r.Status, r.Reason)
 }
 
-// Total returns how many documents the result accounts for, which lets a caller
-// assert that none were silently dropped.
+// Total returns how many documents the result accounts for, which lets a caller assert
+// that none were silently dropped.
 func (r Result) Total() int {
 	return r.Applied + r.Stale + len(r.Rejected)
 }

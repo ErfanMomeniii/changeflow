@@ -66,12 +66,10 @@ type RunnerOptions struct {
 	Logger   *slog.Logger
 }
 
-// Runner drives one stream: it transforms events, batches the documents, writes
-// them, and only then records the position.
+// Runner drives one stream: transform, batch, write, and only then record the position.
 //
-// That order is the design's central rule. Recording a position before the sink
-// has accepted the documents would mean a crash in between loses them, with
-// nothing left to indicate anything is missing.
+// That order is the central rule. A position recorded before the sink accepted the
+// documents would lose them on a crash, with nothing left to say anything was missing.
 type Runner struct {
 	stream        string
 	plan          *Plan

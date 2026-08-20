@@ -135,7 +135,6 @@ type Sink struct {
 
 // Mapping selects and reshapes the columns a stream writes.
 type Mapping struct {
-	// Key defaults to the table's primary key, discovered from the server.
 	Key        []string          `yaml:"key"`
 	Include    []string          `yaml:"include"`
 	Exclude    []string          `yaml:"exclude"`

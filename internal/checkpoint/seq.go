@@ -8,20 +8,16 @@ import (
 	"time"
 )
 
-// floorShift sets how many versions each millisecond of wall clock is worth.
-// Ten bits leaves 1024 versions per millisecond, far above any single source's
-// event rate, while keeping the value decades away from the signed 64-bit limit
-// that sink version fields impose.
+// floorShift is how many versions each millisecond of wall clock is worth: 1024, far
+// above any source's event rate and still decades from the signed 64-bit limit sinks
+// impose on a version.
 const floorShift = 10
 
-// seqFloor converts a wall-clock instant into the lowest version acceptable at
-// that moment.
+// seqFloor is the lowest version acceptable at a given instant.
 //
-// The floor exists for one failure: if the checkpoint store is lost, a watermark
-// restarting near zero would make every subsequent write look older than what the
-// sink already holds. The sink would reject them all as stale and silently freeze
-// on old data while reporting success. Wall clock only moves forward, so flooring
-// on it keeps versions increasing even across total state loss.
+// It exists for one failure: with the checkpoint store lost, a watermark restarting near
+// zero would make every write look older than what the sink holds, so all of them would
+// be discarded as stale while the stream reported success. Wall clock only moves forward.
 func seqFloor(now time.Time) uint64 {
 	ms := now.UnixMilli()
 	if ms < 0 {
@@ -30,12 +26,11 @@ func seqFloor(now time.Time) uint64 {
 	return uint64(ms) << floorShift
 }
 
-// Allocator hands out monotonically increasing version numbers, reserving them in
-// blocks so a durable write is needed once per block rather than once per event.
+// Allocator hands out increasing version numbers, reserved in blocks so a durable write
+// happens once per block rather than once per event.
 //
-// Reservation happens before values are issued. A crash therefore skips the
-// remainder of a block, which is harmless, rather than reissuing values that were
-// already used, which would let an older write win in the sink.
+// Reserved before issued, so a crash skips the rest of a block — harmless — rather than
+// reissuing values already used, which would let an older write win.
 type Allocator struct {
 	store     Store
 	stream    string
@@ -47,8 +42,7 @@ type Allocator struct {
 	end  uint64 // last value this allocator may hand out before reserving again
 }
 
-// NewAllocator prepares an allocator for one stream. It does not reserve
-// anything until the first call to Next.
+// NewAllocator prepares an allocator for one stream, reserving nothing until Next.
 func NewAllocator(ctx context.Context, store Store, stream string, blockSize uint64, now func() time.Time) (*Allocator, error) {
 	if store == nil {
 		return nil, errors.New("checkpoint: allocator needs a store")

@@ -372,13 +372,10 @@ func rawKeyValue(v any) any {
 	return v
 }
 
-// toEventValue converts a scanned value into the shape the binlog reader produces
-// for the same column.
-//
-// The two sources speak different dialects: a SELECT returns an ENUM's label and a
-// SET's members as text, while the binlog carries a member number and a bitmask.
-// Converting here keeps one canonical event shape, so the transform has a single
-// contract to satisfy rather than two.
+// toEventValue converts a scanned value into the shape the binlog reader produces for the
+// same column: a SELECT returns an ENUM's label and a SET's members as text, where the
+// binlog carries a member number and a bitmask. One canonical shape, one contract for the
+// transform to satisfy.
 func toEventValue(c schema.Column, v any) (any, error) {
 	if v == nil {
 		return nil, nil
