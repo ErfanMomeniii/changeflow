@@ -42,7 +42,7 @@ func TestMetricsAreRegisteredUnderTheirDocumentedNames(t *testing.T) {
 
 	// Touch every series so histograms and label sets appear in a scrape.
 	m.Lag(1.5)
-	m.Event(cdc.OpInsert)
+	m.Event(cdc.OperationInsert)
 	m.Batch(100)
 	m.Write(90, 5, 5, 20*time.Millisecond, false)
 	m.DeadLettered(1)
@@ -161,10 +161,10 @@ func TestNegativeLagIsClamped(t *testing.T) {
 func TestEventsAreCountedByOperation(t *testing.T) {
 	m, _ := newTestMetrics(t)
 
-	m.Event(cdc.OpInsert)
-	m.Event(cdc.OpInsert)
-	m.Event(cdc.OpDelete)
-	m.Event(cdc.OpSnapshot)
+	m.Event(cdc.OperationInsert)
+	m.Event(cdc.OperationInsert)
+	m.Event(cdc.OperationDelete)
+	m.Event(cdc.OperationSnapshot)
 
 	if got := testutil.ToFloat64(m.events.WithLabelValues("insert")); got != 2 {
 		t.Errorf("inserts = %v, want 2", got)
@@ -184,7 +184,7 @@ func TestEventsAreCountedByOperation(t *testing.T) {
 func TestNilMetricsAreSafe(t *testing.T) {
 	var m *Metrics
 
-	m.Event(cdc.OpInsert)
+	m.Event(cdc.OperationInsert)
 	m.Lag(1)
 	m.Batch(10)
 	m.Write(1, 0, 0, time.Millisecond, false)

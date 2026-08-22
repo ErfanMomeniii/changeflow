@@ -16,27 +16,29 @@ func newValidateCmd() *cobra.Command {
 		Use:   "validate",
 		Short: "Check a configuration file without connecting to anything",
 		Args:  cobra.NoArgs,
-		RunE: func(*cobra.Command, []string) error {
-			cfg, err := config.Load(path)
-			if err != nil {
-				return err
-			}
-			// A configuration whose buffers and in-flight batches exceed the process memory
-			// limit is a scheduled crash, so it is better refused here.
-			if err := cfg.CheckMemoryLimit(debug.SetMemoryLimit(-1)); err != nil {
-				return err
-			}
-
-			fmt.Printf("configuration is valid: %d stream(s), about %s of buffers and in-flight batches\n",
-				len(cfg.Streams), config.ByteSize(cfg.EstimatedMemory()))
-			for _, name := range cfg.StreamNames() {
-				s := cfg.Streams[name]
-				fmt.Printf("  %-28s %s -> %s\n", name, s.Table, s.Sink.Type)
-			}
-			return nil
-		},
+		RunE:  func(*cobra.Command, []string) error { return validateConfig(path) },
 	}
 
 	configFlag(cmd, &path)
 	return cmd
+}
+
+func validateConfig(path string) error {
+	cfg, err := config.Load(path)
+	if err != nil {
+		return err
+	}
+	// A configuration whose buffers and in-flight batches exceed the process memory
+	// limit is a scheduled crash, so it is better refused here.
+	if err := cfg.CheckMemoryLimit(debug.SetMemoryLimit(-1)); err != nil {
+		return err
+	}
+
+	fmt.Printf("configuration is valid: %d stream(s), about %s of buffers and in-flight batches\n",
+		len(cfg.Streams), config.ByteSize(cfg.EstimatedMemory()))
+	for _, name := range cfg.StreamNames() {
+		s := cfg.Streams[name]
+		fmt.Printf("  %-28s %s -> %s\n", name, s.Table, s.Sink.Type)
+	}
+	return nil
 }

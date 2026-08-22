@@ -162,21 +162,11 @@ func (s *Snapshotter) setErr(err error) {
 }
 
 func (s *Snapshotter) run(ctx context.Context, out chan<- cdc.ChangeEvent) error {
-	// A dedicated connection, so the session settings below apply to every query and
-	// nothing else in the pool inherits them.
-	conn, err := s.opts.DB.Conn(ctx)
+	conn, err := s.scanConn(ctx)
 	if err != nil {
-		return fmt.Errorf("snapshot: acquire connection: %w", err)
+		return err
 	}
 	defer conn.Close()
-
-	// A TIMESTAMP is rendered in the session's zone. Without this it would arrive in
-	// whatever zone the server happens to use, while the binlog reader always sees
-	// UTC, and the same row would land in the destination with two different times
-	// depending on which source read it.
-	if _, err := conn.ExecContext(ctx, "SET SESSION time_zone = '+00:00'"); err != nil {
-		return fmt.Errorf("snapshot: set session time zone: %w", err)
-	}
 
 	cursor, err := decodeCursor(s.opts.Cursor, len(s.keyCols))
 	if err != nil {
@@ -197,38 +187,9 @@ func (s *Snapshotter) run(ctx context.Context, out chan<- cdc.ChangeEvent) error
 			return nil
 		}
 
-		encodedCursor, err := encodeCursor(next)
-		if err != nil {
+		if err := s.emitChunk(ctx, out, rows, next); err != nil {
 			return err
 		}
-		rowsAfterChunk := s.rowsRead.Load() + uint64(len(rows))
-
-		for i, row := range rows {
-			ev := cdc.ChangeEvent{
-				Meta: s.opts.Meta,
-				Op:   cdc.OpSnapshot,
-				// A scanned row has no prior state and no transaction: it is simply
-				// what the table holds now.
-				After: row,
-				Seq:   s.opts.BaseSeq,
-			}
-			// Only the last row of a chunk carries the cursor. Attaching one to every
-			// row would encode a position per row for no benefit, and a batch cut short
-			// mid-chunk simply resumes from the previous boundary and re-reads a chunk,
-			// which the destination absorbs.
-			if i == len(rows)-1 {
-				ev.Cursor = encodedCursor
-				ev.RowsScanned = rowsAfterChunk
-			}
-
-			select {
-			case out <- ev:
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}
-
-		s.rowsRead.Store(rowsAfterChunk)
 		cursor = next
 
 		if s.opts.Observe != nil {
@@ -243,6 +204,62 @@ func (s *Snapshotter) run(ctx context.Context, out chan<- cdc.ChangeEvent) error
 			return nil
 		}
 	}
+}
+
+// scanConn takes a dedicated connection, so the session settings applied here cover every
+// query the scan makes and nothing else in the pool inherits them.
+func (s *Snapshotter) scanConn(ctx context.Context) (*sql.Conn, error) {
+	conn, err := s.opts.DB.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot: acquire connection: %w", err)
+	}
+
+	// A TIMESTAMP is rendered in the session's zone. Without this it would arrive in
+	// whatever zone the server happens to use, while the binlog reader always sees
+	// UTC, and the same row would land in the destination with two different times
+	// depending on which source read it.
+	if _, err := conn.ExecContext(ctx, "SET SESSION time_zone = '+00:00'"); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("snapshot: set session time zone: %w", err)
+	}
+	return conn, nil
+}
+
+// emitChunk sends one chunk's rows downstream and records the progress they represent.
+func (s *Snapshotter) emitChunk(ctx context.Context, out chan<- cdc.ChangeEvent, rows []cdc.Row, next []any) error {
+	encodedCursor, err := encodeCursor(next)
+	if err != nil {
+		return err
+	}
+	rowsAfterChunk := s.rowsRead.Load() + uint64(len(rows))
+
+	for i, row := range rows {
+		ev := cdc.ChangeEvent{
+			Meta:      s.opts.Meta,
+			Operation: cdc.OperationSnapshot,
+			// A scanned row has no prior state and no transaction: it is simply
+			// what the table holds now.
+			After: row,
+			Seq:   s.opts.BaseSeq,
+		}
+		// Only the last row of a chunk carries the cursor. Attaching one to every
+		// row would encode a position per row for no benefit, and a batch cut short
+		// mid-chunk simply resumes from the previous boundary and re-reads a chunk,
+		// which the destination absorbs.
+		if i == len(rows)-1 {
+			ev.Cursor = encodedCursor
+			ev.RowsScanned = rowsAfterChunk
+		}
+
+		select {
+		case out <- ev:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	s.rowsRead.Store(rowsAfterChunk)
+	return nil
 }
 
 // readChunk reads the next page and returns the rows plus the cursor that follows
@@ -383,44 +400,10 @@ func toEventValue(c schema.Column, v any) (any, error) {
 
 	switch strings.ToLower(c.DataType) {
 	case "enum":
-		label, err := asString(v)
-		if err != nil {
-			return nil, err
-		}
-		if label == "" {
-			// MySQL's marker for a value that failed validation, which the binlog
-			// reports as member zero.
-			return int64(0), nil
-		}
-		for i, member := range c.EnumValues {
-			if member == label {
-				return int64(i + 1), nil
-			}
-		}
-		return nil, fmt.Errorf("enum value %q is not one of the declared members %v", label, c.EnumValues)
+		return enumMember(c, v)
 
 	case "set":
-		joined, err := asString(v)
-		if err != nil {
-			return nil, err
-		}
-		var bits int64
-		if joined != "" {
-			for _, member := range strings.Split(joined, ",") {
-				index := -1
-				for i, declared := range c.SetValues {
-					if declared == member {
-						index = i
-						break
-					}
-				}
-				if index < 0 {
-					return nil, fmt.Errorf("set value %q is not one of the declared members %v", member, c.SetValues)
-				}
-				bits |= 1 << uint(index)
-			}
-		}
-		return bits, nil
+		return setBitmask(c, v)
 
 	case "decimal", "numeric":
 		text, err := asString(v)
@@ -459,6 +442,56 @@ func toEventValue(c schema.Column, v any) (any, error) {
 	default:
 		return nil, fmt.Errorf("type %s is not supported by the scanner", c.DataType)
 	}
+}
+
+// enumMember turns a label into the member number the binlog would have carried.
+func enumMember(c schema.Column, v any) (any, error) {
+	label, err := asString(v)
+	if err != nil {
+		return nil, err
+	}
+	if label == "" {
+		// MySQL's marker for a value that failed validation, which the binlog
+		// reports as member zero.
+		return int64(0), nil
+	}
+	for i, member := range c.EnumValues {
+		if member == label {
+			return int64(i + 1), nil
+		}
+	}
+	return nil, fmt.Errorf("enum value %q is not one of the declared members %v", label, c.EnumValues)
+}
+
+// setBitmask turns a comma-separated member list into the bitmask the binlog would have
+// carried.
+func setBitmask(c schema.Column, v any) (any, error) {
+	joined, err := asString(v)
+	if err != nil {
+		return nil, err
+	}
+	if joined == "" {
+		return int64(0), nil
+	}
+
+	var bits int64
+	for _, member := range strings.Split(joined, ",") {
+		index := indexOfString(c.SetValues, member)
+		if index < 0 {
+			return nil, fmt.Errorf("set value %q is not one of the declared members %v", member, c.SetValues)
+		}
+		bits |= 1 << uint(index)
+	}
+	return bits, nil
+}
+
+func indexOfString(values []string, want string) int {
+	for i, v := range values {
+		if v == want {
+			return i
+		}
+	}
+	return -1
 }
 
 func asString(v any) (string, error) {

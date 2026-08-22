@@ -182,8 +182,8 @@ func TestStreamerEmitsInsertUpdateDelete(t *testing.T) {
 	t.Cleanup(func() { h.writer.Exec("DELETE FROM orders WHERE id=9001") })
 
 	insert := h.next(t)
-	if insert.Op != cdc.OpInsert {
-		t.Fatalf("first event op = %s, want insert", insert.Op)
+	if insert.Operation != cdc.OperationInsert {
+		t.Fatalf("first event operation = %s, want insert", insert.Operation)
 	}
 	if insert.Meta.Name() != "shop.orders" {
 		t.Errorf("table = %s", insert.Meta.Name())
@@ -199,8 +199,8 @@ func TestStreamerEmitsInsertUpdateDelete(t *testing.T) {
 	}
 
 	update := h.next(t)
-	if update.Op != cdc.OpUpdate {
-		t.Fatalf("second event op = %s, want update", update.Op)
+	if update.Operation != cdc.OperationUpdate {
+		t.Fatalf("second event operation = %s, want update", update.Operation)
 	}
 	// An update needs both images: the prior one to find the old key, the new one to
 	// write.
@@ -209,8 +209,8 @@ func TestStreamerEmitsInsertUpdateDelete(t *testing.T) {
 	}
 
 	del := h.next(t)
-	if del.Op != cdc.OpDelete {
-		t.Fatalf("third event op = %s, want delete", del.Op)
+	if del.Operation != cdc.OperationDelete {
+		t.Fatalf("third event operation = %s, want delete", del.Operation)
 	}
 	if del.Before == nil {
 		t.Fatal("a delete must carry the prior values, which is the only place its key still exists")
@@ -475,8 +475,8 @@ func TestRowsWrittenBeforeAColumnWasDroppedStillDecode(t *testing.T) {
 
 	ev := h.next(t)
 
-	if ev.Op != cdc.OpInsert {
-		t.Fatalf("op = %s, want insert", ev.Op)
+	if ev.Operation != cdc.OperationInsert {
+		t.Fatalf("operation = %s, want insert", ev.Operation)
 	}
 	// The row is laid out by the current definition, so the transform can index it.
 	if len(ev.After) != len(ev.Meta.Columns) {

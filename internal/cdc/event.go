@@ -11,30 +11,30 @@ import (
 	"github.com/ErfanMomeniii/changeflow/internal/schema"
 )
 
-// Op is what happened to a row.
-type Op uint8
+// Operation is what happened to a row.
+type Operation uint8
 
 const (
-	OpInsert Op = iota
-	OpUpdate
-	OpDelete
-	OpSnapshot
+	OperationInsert Operation = iota
+	OperationUpdate
+	OperationDelete
+	OperationSnapshot
 )
 
-var opNames = map[Op]string{
-	OpInsert: "insert", OpUpdate: "update", OpDelete: "delete", OpSnapshot: "snapshot",
+var operationNames = map[Operation]string{
+	OperationInsert: "insert", OperationUpdate: "update", OperationDelete: "delete", OperationSnapshot: "snapshot",
 }
 
-func (o Op) String() string {
-	if name, ok := opNames[o]; ok {
+func (o Operation) String() string {
+	if name, ok := operationNames[o]; ok {
 		return name
 	}
 	return "unknown"
 }
 
 // IsUpsert reports whether the operation writes a row rather than removing it.
-func (o Op) IsUpsert() bool {
-	return o == OpInsert || o == OpUpdate || o == OpSnapshot
+func (o Operation) IsUpsert() bool {
+	return o == OperationInsert || o == OperationUpdate || o == OperationSnapshot
 }
 
 // Row holds one row's column values in ordinal order, matching schema.TableMeta.Columns.
@@ -48,7 +48,7 @@ type ChangeEvent struct {
 	// Meta is shared by pointer and never copied.
 	Meta *schema.TableMeta
 
-	Op Op
+	Operation Operation
 
 	// Before is nil for an insert or a snapshot row; After is nil for a delete.
 	Before Row
@@ -76,7 +76,7 @@ type ChangeEvent struct {
 // Values returns the row to write from: the new values for an upsert, and the prior
 // values for a delete, which is the only place a deleted row's key still exists.
 func (e *ChangeEvent) Values() Row {
-	if e.Op == OpDelete {
+	if e.Operation == OperationDelete {
 		return e.Before
 	}
 	return e.After

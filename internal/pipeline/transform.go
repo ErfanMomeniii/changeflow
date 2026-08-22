@@ -204,7 +204,7 @@ func (p *Plan) Apply(ev *cdc.ChangeEvent) ([]cdc.Doc, error) {
 		return nil, err
 	}
 
-	if ev.Op == cdc.OpDelete {
+	if ev.Operation == cdc.OperationDelete {
 		key, err := p.key(values)
 		if err != nil {
 			return nil, err
@@ -232,7 +232,7 @@ func (p *Plan) Apply(ev *cdc.ChangeEvent) ([]cdc.Doc, error) {
 		return nil, err
 	}
 
-	if ev.Op == cdc.OpUpdate && ev.Before != nil {
+	if ev.Operation == cdc.OperationUpdate && ev.Before != nil {
 		if err := p.checkWidth(ev.Before); err != nil {
 			return nil, err
 		}
@@ -352,6 +352,8 @@ func (p *Plan) encodeFields(fields []field, row cdc.Row) ([]byte, error) {
 	return append(buf, '}'), nil
 }
 
+// encodeValue appends one value in its destination form. Each kind is encoded by its own
+// appender below; this only chooses between them.
 func (p *Plan) encodeValue(buf []byte, f field, v any) ([]byte, error) {
 	if v == nil {
 		return append(buf, "null"...), nil
@@ -359,142 +361,171 @@ func (p *Plan) encodeValue(buf []byte, f field, v any) ([]byte, error) {
 
 	switch f.kind {
 	case schema.KindBool:
-		n, ok := asInt(v)
-		if !ok {
-			return nil, fmt.Errorf("transform: field %s expected an integer for a boolean, got %T", f.name, v)
-		}
-		if n != 0 {
-			return append(buf, "true"...), nil
-		}
-		return append(buf, "false"...), nil
-
+		return appendBool(buf, f, v)
 	case schema.KindInt, schema.KindYear, schema.KindTime, schema.KindBit:
-		switch x := v.(type) {
-		case uint64:
-			return strconv.AppendUint(buf, x, 10), nil
-		default:
-			n, ok := asInt(v)
-			if !ok {
-				return nil, fmt.Errorf("transform: field %s expected an integer, got %T", f.name, v)
-			}
-			return strconv.AppendInt(buf, n, 10), nil
-		}
-
+		return appendInt(buf, f, v)
 	case schema.KindUint:
-		switch x := v.(type) {
-		case uint64:
-			// Appended as digits, never via a float, so values above 2^53 stay exact.
-			return strconv.AppendUint(buf, x, 10), nil
-		case int64:
-			if x < 0 {
-				return nil, fmt.Errorf("transform: field %s is unsigned but arrived negative (%d), which means the binlog carried no signedness metadata; set binlog_row_metadata=FULL", f.name, x)
-			}
-			return strconv.AppendInt(buf, x, 10), nil
-		default:
-			n, ok := asInt(v)
-			if !ok {
-				return nil, fmt.Errorf("transform: field %s expected an unsigned integer, got %T", f.name, v)
-			}
-			return strconv.AppendInt(buf, n, 10), nil
-		}
-
+		return appendUint(buf, f, v)
 	case schema.KindFloat:
-		switch x := v.(type) {
-		case float32:
-			return strconv.AppendFloat(buf, float64(x), 'g', -1, 32), nil
-		case float64:
-			return strconv.AppendFloat(buf, x, 'g', -1, 64), nil
-		default:
-			return nil, fmt.Errorf("transform: field %s expected a float, got %T", f.name, v)
-		}
-
+		return appendFloat(buf, f, v)
 	case schema.KindDecimal:
-		text, err := decimalText(v)
-		if err != nil {
-			return nil, fmt.Errorf("transform: field %s: %w", f.name, err)
-		}
-		// Quoted for Elasticsearch, which has no exact decimal type and would
-		// otherwise round the value; bare for ClickHouse, whose column is exact.
-		if p.dialect == DialectElasticsearch {
-			return appendJSONString(buf, text), nil
-		}
-		return append(buf, text...), nil
-
+		return p.appendDecimal(buf, f, v)
 	case schema.KindEnum:
-		n, ok := asInt(v)
-		if !ok {
-			return nil, fmt.Errorf("transform: field %s expected an enum member number, got %T", f.name, v)
-		}
-		switch {
-		case n == 0:
-			// MySQL's marker for a value that failed validation.
-			return appendJSONString(buf, ""), nil
-		case n >= 1 && int(n) <= len(f.enumLabels):
-			return appendJSONString(buf, f.enumLabels[n-1]), nil
-		default:
-			return nil, fmt.Errorf("transform: field %s has enum member number %d, but only %d members are declared", f.name, n, len(f.enumLabels))
-		}
-
+		return appendEnum(buf, f, v)
 	case schema.KindSet:
-		bits, ok := asInt(v)
-		if !ok {
-			return nil, fmt.Errorf("transform: field %s expected a set bitmask, got %T", f.name, v)
-		}
-		buf = append(buf, '[')
-		first := true
-		for i, label := range f.setLabels {
-			if bits&(1<<uint(i)) == 0 {
-				continue
-			}
-			if !first {
-				buf = append(buf, ',')
-			}
-			first = false
-			buf = appendJSONString(buf, label)
-		}
-		return append(buf, ']'), nil
-
+		return appendSet(buf, f, v)
 	case schema.KindJSON:
-		// Passed through unchanged: re-encoding could reorder keys or lose numeric
-		// precision that the source preserved.
-		switch x := v.(type) {
-		case []byte:
-			if len(x) == 0 {
-				return append(buf, "null"...), nil
-			}
-			return append(buf, x...), nil
-		case string:
-			if x == "" {
-				return append(buf, "null"...), nil
-			}
-			return append(buf, x...), nil
-		default:
-			return nil, fmt.Errorf("transform: field %s expected a JSON document, got %T", f.name, v)
-		}
-
+		return appendRawJSON(buf, f, v)
 	case schema.KindBytes:
-		switch x := v.(type) {
-		case []byte:
-			return appendJSONString(buf, base64.StdEncoding.EncodeToString(x)), nil
-		case string:
-			return appendJSONString(buf, base64.StdEncoding.EncodeToString([]byte(x))), nil
-		default:
-			return nil, fmt.Errorf("transform: field %s expected bytes, got %T", f.name, v)
-		}
-
+		return appendBase64(buf, f, v)
 	case schema.KindString:
-		text, err := stringValue(f, v)
-		if err != nil {
-			return nil, err
-		}
-		return appendJSONString(buf, text), nil
-
+		return appendString(buf, f, v)
 	case schema.KindDate, schema.KindDateTime, schema.KindTimestamp:
 		return p.appendTime(buf, f, v)
-
 	default:
 		return nil, fmt.Errorf("transform: field %s has unhandled kind %s", f.name, f.kind)
 	}
+}
+
+func appendBool(buf []byte, f field, v any) ([]byte, error) {
+	n, ok := asInt(v)
+	if !ok {
+		return nil, fmt.Errorf("transform: field %s expected an integer for a boolean, got %T", f.name, v)
+	}
+	if n != 0 {
+		return append(buf, "true"...), nil
+	}
+	return append(buf, "false"...), nil
+}
+
+func appendInt(buf []byte, f field, v any) ([]byte, error) {
+	if x, ok := v.(uint64); ok {
+		return strconv.AppendUint(buf, x, 10), nil
+	}
+	n, ok := asInt(v)
+	if !ok {
+		return nil, fmt.Errorf("transform: field %s expected an integer, got %T", f.name, v)
+	}
+	return strconv.AppendInt(buf, n, 10), nil
+}
+
+func appendUint(buf []byte, f field, v any) ([]byte, error) {
+	switch x := v.(type) {
+	case uint64:
+		// Appended as digits, never via a float, so values above 2^53 stay exact.
+		return strconv.AppendUint(buf, x, 10), nil
+	case int64:
+		if x < 0 {
+			return nil, fmt.Errorf("transform: field %s is unsigned but arrived negative (%d), which means the binlog carried no signedness metadata; set binlog_row_metadata=FULL", f.name, x)
+		}
+		return strconv.AppendInt(buf, x, 10), nil
+	default:
+		n, ok := asInt(v)
+		if !ok {
+			return nil, fmt.Errorf("transform: field %s expected an unsigned integer, got %T", f.name, v)
+		}
+		return strconv.AppendInt(buf, n, 10), nil
+	}
+}
+
+func appendFloat(buf []byte, f field, v any) ([]byte, error) {
+	switch x := v.(type) {
+	case float32:
+		return strconv.AppendFloat(buf, float64(x), 'g', -1, 32), nil
+	case float64:
+		return strconv.AppendFloat(buf, x, 'g', -1, 64), nil
+	default:
+		return nil, fmt.Errorf("transform: field %s expected a float, got %T", f.name, v)
+	}
+}
+
+func (p *Plan) appendDecimal(buf []byte, f field, v any) ([]byte, error) {
+	text, err := decimalText(v)
+	if err != nil {
+		return nil, fmt.Errorf("transform: field %s: %w", f.name, err)
+	}
+	// Quoted for Elasticsearch, which has no exact decimal type and would
+	// otherwise round the value; bare for ClickHouse, whose column is exact.
+	if p.dialect == DialectElasticsearch {
+		return appendJSONString(buf, text), nil
+	}
+	return append(buf, text...), nil
+}
+
+func appendEnum(buf []byte, f field, v any) ([]byte, error) {
+	n, ok := asInt(v)
+	if !ok {
+		return nil, fmt.Errorf("transform: field %s expected an enum member number, got %T", f.name, v)
+	}
+	switch {
+	case n == 0:
+		// MySQL's marker for a value that failed validation.
+		return appendJSONString(buf, ""), nil
+	case n >= 1 && int(n) <= len(f.enumLabels):
+		return appendJSONString(buf, f.enumLabels[n-1]), nil
+	default:
+		return nil, fmt.Errorf("transform: field %s has enum member number %d, but only %d members are declared", f.name, n, len(f.enumLabels))
+	}
+}
+
+// appendSet writes a set column as an array of the labels its bitmask selects.
+func appendSet(buf []byte, f field, v any) ([]byte, error) {
+	bits, ok := asInt(v)
+	if !ok {
+		return nil, fmt.Errorf("transform: field %s expected a set bitmask, got %T", f.name, v)
+	}
+
+	buf = append(buf, '[')
+	first := true
+	for i, label := range f.setLabels {
+		if bits&(1<<uint(i)) == 0 {
+			continue
+		}
+		if !first {
+			buf = append(buf, ',')
+		}
+		first = false
+		buf = appendJSONString(buf, label)
+	}
+	return append(buf, ']'), nil
+}
+
+// appendRawJSON passes a JSON column through unchanged: re-encoding could reorder keys or
+// lose numeric precision that the source preserved.
+func appendRawJSON(buf []byte, f field, v any) ([]byte, error) {
+	var raw []byte
+	switch x := v.(type) {
+	case []byte:
+		raw = x
+	case string:
+		raw = []byte(x)
+	default:
+		return nil, fmt.Errorf("transform: field %s expected a JSON document, got %T", f.name, v)
+	}
+
+	if len(raw) == 0 {
+		return append(buf, "null"...), nil
+	}
+	return append(buf, raw...), nil
+}
+
+func appendBase64(buf []byte, f field, v any) ([]byte, error) {
+	switch x := v.(type) {
+	case []byte:
+		return appendJSONString(buf, base64.StdEncoding.EncodeToString(x)), nil
+	case string:
+		return appendJSONString(buf, base64.StdEncoding.EncodeToString([]byte(x))), nil
+	default:
+		return nil, fmt.Errorf("transform: field %s expected bytes, got %T", f.name, v)
+	}
+}
+
+func appendString(buf []byte, f field, v any) ([]byte, error) {
+	text, err := stringValue(f, v)
+	if err != nil {
+		return nil, err
+	}
+	return appendJSONString(buf, text), nil
 }
 
 // stringValue converts a column's bytes to UTF-8 text.

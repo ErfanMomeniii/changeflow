@@ -74,7 +74,7 @@ func newPlan(t *testing.T, m *schema.TableMeta, mapping config.Mapping, dialect 
 }
 
 func insertEvent(m *schema.TableMeta) *cdc.ChangeEvent {
-	return &cdc.ChangeEvent{Meta: m, Op: cdc.OpInsert, After: fullRow(), Seq: 1000, GTID: "uuid:1"}
+	return &cdc.ChangeEvent{Meta: m, Operation: cdc.OperationInsert, After: fullRow(), Seq: 1000, GTID: "uuid:1"}
 }
 
 func applyOne(t *testing.T, p *Plan, ev *cdc.ChangeEvent) cdc.Doc {
@@ -150,7 +150,7 @@ func TestLargeUnsignedIntegerIsExact(t *testing.T) {
 
 	row := fullRow()
 	row[0] = uint64(18446744073709551001)
-	doc := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Op: cdc.OpInsert, After: row, Seq: 1})
+	doc := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Operation: cdc.OperationInsert, After: row, Seq: 1})
 
 	if !strings.Contains(body(t, doc), "18446744073709551001") {
 		t.Fatalf("value lost precision: %s", body(t, doc))
@@ -209,7 +209,7 @@ func TestEmptySetIsAnEmptyArray(t *testing.T) {
 
 	row := fullRow()
 	row[3] = int64(0)
-	doc := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Op: cdc.OpInsert, After: row, Seq: 1})
+	doc := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Operation: cdc.OperationInsert, After: row, Seq: 1})
 
 	if got := body(t, doc); !strings.Contains(got, `"channels":[]`) {
 		t.Fatalf("expected an empty array, got: %s", got)
@@ -255,7 +255,7 @@ func TestNullIsWrittenAsNull(t *testing.T) {
 
 	row := fullRow()
 	row[6] = nil
-	doc := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Op: cdc.OpInsert, After: row, Seq: 1})
+	doc := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Operation: cdc.OperationInsert, After: row, Seq: 1})
 
 	if got := body(t, doc); !strings.Contains(got, `"note_latin1":null`) {
 		t.Fatalf("expected null, got: %s", got)
@@ -325,7 +325,7 @@ func TestZeroDatePolicies(t *testing.T) {
 
 			row := fullRow()
 			row[8] = "0000-00-00 00:00:00.000"
-			docs, err := p.Apply(&cdc.ChangeEvent{Meta: m, Op: cdc.OpInsert, After: row, Seq: 1})
+			docs, err := p.Apply(&cdc.ChangeEvent{Meta: m, Operation: cdc.OperationInsert, After: row, Seq: 1})
 
 			if tc.wantErr {
 				if err == nil {
@@ -347,7 +347,7 @@ func TestDeleteProducesATombstoneKeyedFromBefore(t *testing.T) {
 	m := ordersMeta(t)
 	p := newPlan(t, m, config.Mapping{Key: []string{"id"}}, DialectElasticsearch)
 
-	doc := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Op: cdc.OpDelete, Before: fullRow(), Seq: 2000})
+	doc := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Operation: cdc.OperationDelete, Before: fullRow(), Seq: 2000})
 
 	if !doc.Deleted {
 		t.Error("expected the document to be marked deleted")
@@ -369,7 +369,7 @@ func TestKeyChangingUpdateProducesDeleteThenUpsert(t *testing.T) {
 	before, after := fullRow(), fullRow()
 	after[0] = uint64(43)
 
-	docs, err := p.Apply(&cdc.ChangeEvent{Meta: m, Op: cdc.OpUpdate, Before: before, After: after, Seq: 5000})
+	docs, err := p.Apply(&cdc.ChangeEvent{Meta: m, Operation: cdc.OperationUpdate, Before: before, After: after, Seq: 5000})
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -399,7 +399,7 @@ func TestUpdateWithoutKeyChangeProducesOneUpsert(t *testing.T) {
 	before, after := fullRow(), fullRow()
 	after[2] = int64(3) // status becomes shipped
 
-	docs, err := p.Apply(&cdc.ChangeEvent{Meta: m, Op: cdc.OpUpdate, Before: before, After: after, Seq: 7000})
+	docs, err := p.Apply(&cdc.ChangeEvent{Meta: m, Operation: cdc.OperationUpdate, Before: before, After: after, Seq: 7000})
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -417,7 +417,7 @@ func TestSnapshotRowIsAnUpsert(t *testing.T) {
 	m := ordersMeta(t)
 	p := newPlan(t, m, config.Mapping{Key: []string{"id"}}, DialectElasticsearch)
 
-	doc := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Op: cdc.OpSnapshot, After: fullRow(), Seq: 10})
+	doc := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Operation: cdc.OperationSnapshot, After: fullRow(), Seq: 10})
 
 	if doc.Deleted || doc.Key != "42" {
 		t.Fatalf("expected an upsert keyed 42, got %+v", doc)
@@ -435,7 +435,7 @@ func TestCompositeKeyIsJoined(t *testing.T) {
 	}
 	p := newPlan(t, m, config.Mapping{Key: []string{"order_id", "sku"}}, DialectElasticsearch)
 
-	doc := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Op: cdc.OpInsert, After: cdc.Row{uint64(100), "SKU-1"}, Seq: 1})
+	doc := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Operation: cdc.OperationInsert, After: cdc.Row{uint64(100), "SKU-1"}, Seq: 1})
 
 	if doc.Key != "100:SKU-1" {
 		t.Fatalf("key = %q, want 100:SKU-1", doc.Key)
@@ -454,8 +454,8 @@ func TestCompositeKeyEscapesSeparatorInValues(t *testing.T) {
 	}
 	p := newPlan(t, m, config.Mapping{Key: []string{"order_id", "sku"}}, DialectElasticsearch)
 
-	first := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Op: cdc.OpInsert, After: cdc.Row{uint64(100), "SKU:99"}, Seq: 1})
-	second := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Op: cdc.OpInsert, After: cdc.Row{uint64(100), "SKU"}, Seq: 2})
+	first := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Operation: cdc.OperationInsert, After: cdc.Row{uint64(100), "SKU:99"}, Seq: 1})
+	second := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Operation: cdc.OperationInsert, After: cdc.Row{uint64(100), "SKU"}, Seq: 2})
 
 	if first.Key == second.Key {
 		t.Fatalf("distinct keys collided: both produced %q", first.Key)
@@ -478,8 +478,8 @@ func TestOverlongKeyIsHashed(t *testing.T) {
 	p := newPlan(t, m, config.Mapping{Key: []string{"k"}}, DialectElasticsearch)
 
 	long := strings.Repeat("x", 600)
-	first := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Op: cdc.OpInsert, After: cdc.Row{long}, Seq: 1})
-	again := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Op: cdc.OpInsert, After: cdc.Row{long}, Seq: 2})
+	first := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Operation: cdc.OperationInsert, After: cdc.Row{long}, Seq: 1})
+	again := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Operation: cdc.OperationInsert, After: cdc.Row{long}, Seq: 2})
 
 	if len(first.Key) > 512 {
 		t.Fatalf("key is %d bytes, which Elasticsearch would reject", len(first.Key))
@@ -487,7 +487,7 @@ func TestOverlongKeyIsHashed(t *testing.T) {
 	if first.Key != again.Key {
 		t.Fatal("the digest must be stable for the same input")
 	}
-	other := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Op: cdc.OpInsert, After: cdc.Row{strings.Repeat("y", 600)}, Seq: 3})
+	other := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Operation: cdc.OperationInsert, After: cdc.Row{strings.Repeat("y", 600)}, Seq: 3})
 	if other.Key == first.Key {
 		t.Fatal("different keys must not digest to the same value")
 	}
@@ -502,7 +502,7 @@ func TestNullKeyIsRefused(t *testing.T) {
 	row := fullRow()
 	row[0] = nil
 
-	if _, err := p.Apply(&cdc.ChangeEvent{Meta: m, Op: cdc.OpInsert, After: row, Seq: 1}); err == nil {
+	if _, err := p.Apply(&cdc.ChangeEvent{Meta: m, Operation: cdc.OperationInsert, After: row, Seq: 1}); err == nil {
 		t.Fatal("expected a null key to be refused")
 	}
 }
@@ -513,7 +513,7 @@ func TestApplyRejectsRowOfWrongWidth(t *testing.T) {
 
 	short := cdc.Row{uint64(42), uint64(7)}
 
-	if _, err := p.Apply(&cdc.ChangeEvent{Meta: m, Op: cdc.OpInsert, After: short, Seq: 1}); err == nil {
+	if _, err := p.Apply(&cdc.ChangeEvent{Meta: m, Operation: cdc.OperationInsert, After: short, Seq: 1}); err == nil {
 		t.Fatal("expected a row with fewer values than columns to be refused")
 	}
 }
@@ -560,7 +560,7 @@ func TestPlanIsReusableAcrossEvents(t *testing.T) {
 	row := fullRow()
 	row[0] = uint64(99)
 	row[2] = int64(1)
-	second := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Op: cdc.OpInsert, After: row, Seq: 2})
+	second := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Operation: cdc.OperationInsert, After: row, Seq: 2})
 
 	if strings.Contains(string(second.Body), `"paid"`) {
 		t.Fatalf("second document contains the first's value: %s", second.Body)

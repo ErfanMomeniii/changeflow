@@ -69,7 +69,7 @@ func benchPlan(b *testing.B, dialect Dialect) *Plan {
 
 func BenchmarkTransformInsert(b *testing.B) {
 	p := benchPlan(b, DialectElasticsearch)
-	ev := &cdc.ChangeEvent{Meta: &benchMeta, Op: cdc.OpInsert, After: benchRow(), Seq: 1000}
+	ev := &cdc.ChangeEvent{Meta: &benchMeta, Operation: cdc.OperationInsert, After: benchRow(), Seq: 1000}
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -88,7 +88,7 @@ func BenchmarkTransformUpdate(b *testing.B) {
 	p := benchPlan(b, DialectElasticsearch)
 	before, after := benchRow(), benchRow()
 	after[2] = int64(3)
-	ev := &cdc.ChangeEvent{Meta: &benchMeta, Op: cdc.OpUpdate, Before: before, After: after, Seq: 1000}
+	ev := &cdc.ChangeEvent{Meta: &benchMeta, Operation: cdc.OperationUpdate, Before: before, After: after, Seq: 1000}
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -101,7 +101,7 @@ func BenchmarkTransformUpdate(b *testing.B) {
 
 func BenchmarkTransformDelete(b *testing.B) {
 	p := benchPlan(b, DialectElasticsearch)
-	ev := &cdc.ChangeEvent{Meta: &benchMeta, Op: cdc.OpDelete, Before: benchRow(), Seq: 1000}
+	ev := &cdc.ChangeEvent{Meta: &benchMeta, Operation: cdc.OperationDelete, Before: benchRow(), Seq: 1000}
 
 	b.ReportAllocs()
 	b.ResetTimer()

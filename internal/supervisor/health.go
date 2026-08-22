@@ -19,7 +19,7 @@ type streamObserver struct {
 	state   *streamState
 }
 
-func (o *streamObserver) Event(op cdc.Op) { o.metrics.Event(op) }
+func (o *streamObserver) Event(operation cdc.Operation) { o.metrics.Event(operation) }
 
 func (o *streamObserver) Lag(seconds float64) {
 	o.metrics.Lag(seconds)

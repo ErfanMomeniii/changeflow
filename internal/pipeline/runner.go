@@ -26,7 +26,7 @@ type DeadLetterQueue interface {
 // library and a test can assert on the reports themselves.
 type Observer interface {
 	// Event reports one change read from the source.
-	Event(op cdc.Op)
+	Event(operation cdc.Operation)
 	// Lag reports how far behind the source a just-handled event was.
 	Lag(seconds float64)
 	// Batch reports the size of a batch about to be written.
@@ -42,7 +42,7 @@ type Observer interface {
 // hot path.
 type nopObserver struct{}
 
-func (nopObserver) Event(cdc.Op)                             {}
+func (nopObserver) Event(cdc.Operation)                      {}
 func (nopObserver) Lag(float64)                              {}
 func (nopObserver) Batch(int)                                {}
 func (nopObserver) Write(int, int, int, time.Duration, bool) {}
@@ -213,7 +213,7 @@ func (r *Runner) handle(ctx context.Context, ev cdc.ChangeEvent) error {
 		}})
 	}
 
-	r.observer.Event(ev.Op)
+	r.observer.Event(ev.Operation)
 	if !ev.Timestamp.IsZero() {
 		// Measured from the source's own timestamp, so it includes time spent queued
 		// inside changeflow rather than only time in transit.

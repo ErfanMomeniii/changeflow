@@ -108,7 +108,7 @@ func runnerPlan(t *testing.T) *Plan {
 func event(seq uint64, id uint64, status, gtid string) cdc.ChangeEvent {
 	return cdc.ChangeEvent{
 		Meta:      runnerMeta(),
-		Op:        cdc.OpInsert,
+		Operation: cdc.OperationInsert,
 		After:     cdc.Row{id, status},
 		Seq:       seq,
 		GTID:      gtid,
@@ -335,12 +335,12 @@ func TestKeyChangeProducesBothDocumentsInOrder(t *testing.T) {
 	})
 
 	ev := cdc.ChangeEvent{
-		Meta:   runnerMeta(),
-		Op:     cdc.OpUpdate,
-		Before: cdc.Row{uint64(1), "paid"},
-		After:  cdc.Row{uint64(2), "paid"},
-		Seq:    10,
-		GTID:   "uuid:5",
+		Meta:      runnerMeta(),
+		Operation: cdc.OperationUpdate,
+		Before:    cdc.Row{uint64(1), "paid"},
+		After:     cdc.Row{uint64(2), "paid"},
+		Seq:       10,
+		GTID:      "uuid:5",
 	}
 
 	if err := h.run(t, ev); err != nil {
@@ -370,11 +370,11 @@ func TestUntransformableEventGoesToTheDeadLetterQueue(t *testing.T) {
 	})
 
 	poison := cdc.ChangeEvent{
-		Meta:  runnerMeta(),
-		Op:    cdc.OpInsert,
-		After: cdc.Row{nil, "paid"}, // a null key cannot identify a row
-		Seq:   1,
-		GTID:  "uuid:1",
+		Meta:      runnerMeta(),
+		Operation: cdc.OperationInsert,
+		After:     cdc.Row{nil, "paid"}, // a null key cannot identify a row
+		Seq:       1,
+		GTID:      "uuid:1",
 	}
 
 	if err := h.run(t, poison, event(2, 2, "paid", "uuid:2")); err != nil {
@@ -446,9 +446,9 @@ func TestScanCursorIsRecordedOnlyAfterTheSinkAcknowledges(t *testing.T) {
 	}
 
 	// Two scanned rows, the second carrying the chunk's cursor.
-	first := cdc.ChangeEvent{Meta: runnerMeta(), Op: cdc.OpSnapshot, After: cdc.Row{uint64(1), "paid"}, Seq: 500}
+	first := cdc.ChangeEvent{Meta: runnerMeta(), Operation: cdc.OperationSnapshot, After: cdc.Row{uint64(1), "paid"}, Seq: 500}
 	second := cdc.ChangeEvent{
-		Meta: runnerMeta(), Op: cdc.OpSnapshot, After: cdc.Row{uint64(2), "paid"}, Seq: 500,
+		Meta: runnerMeta(), Operation: cdc.OperationSnapshot, After: cdc.Row{uint64(2), "paid"}, Seq: 500,
 		Cursor: []byte(`["2"]`), RowsScanned: 2,
 	}
 
@@ -476,9 +476,9 @@ func TestFailedWriteDoesNotAdvanceTheScanCursor(t *testing.T) {
 		return sink.Result{}, errors.New("elasticsearch unavailable")
 	}
 
-	first := cdc.ChangeEvent{Meta: runnerMeta(), Op: cdc.OpSnapshot, After: cdc.Row{uint64(1), "paid"}, Seq: 500}
+	first := cdc.ChangeEvent{Meta: runnerMeta(), Operation: cdc.OperationSnapshot, After: cdc.Row{uint64(1), "paid"}, Seq: 500}
 	second := cdc.ChangeEvent{
-		Meta: runnerMeta(), Op: cdc.OpSnapshot, After: cdc.Row{uint64(2), "paid"}, Seq: 500,
+		Meta: runnerMeta(), Operation: cdc.OperationSnapshot, After: cdc.Row{uint64(2), "paid"}, Seq: 500,
 		Cursor: []byte(`["2"]`), RowsScanned: 2,
 	}
 

@@ -144,8 +144,8 @@ func TestScanMarksEventsAsSnapshotRows(t *testing.T) {
 		t.Fatal("expected the seeded rows to be scanned")
 	}
 	for _, ev := range events {
-		if ev.Op != cdc.OpSnapshot {
-			t.Fatalf("op = %s, want snapshot", ev.Op)
+		if ev.Operation != cdc.OperationSnapshot {
+			t.Fatalf("operation = %s, want snapshot", ev.Operation)
 		}
 		if ev.Before != nil {
 			t.Error("a scanned row has no prior state")

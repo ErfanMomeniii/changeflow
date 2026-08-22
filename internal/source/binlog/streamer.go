@@ -274,6 +274,11 @@ func (s *Streamer) invalidate(dbName, query string) {
 }
 
 func (s *Streamer) emitRows(ctx context.Context, raw *replication.BinlogEvent, e *replication.RowsEvent, out chan<- cdc.ChangeEvent) error {
+	operation, isUpdate, recognised := operationFor(raw.Header.EventType)
+	if !recognised {
+		return nil
+	}
+
 	schemaName, table := string(e.Table.Schema), string(e.Table.Table)
 	if len(s.watched) > 0 && !s.watched[strings.ToLower(schemaName+"."+table)] {
 		return nil
@@ -291,48 +296,65 @@ func (s *Streamer) emitRows(ctx context.Context, raw *replication.BinlogEvent, e
 	if err != nil {
 		return err
 	}
-	meta = align.meta
 
-	timestamp := time.Unix(int64(raw.Header.Timestamp), 0)
-	op, isUpdate, recognised := opFor(raw.Header.EventType)
-	if !recognised {
-		return nil
+	em := emission{
+		align:     align,
+		timestamp: time.Unix(int64(raw.Header.Timestamp), 0),
+		gtid:      s.positionForRows(),
 	}
-
-	// The position attached to these rows excludes the transaction they belong to,
-	// because it is not finished yet. A restart therefore replays this transaction
-	// in full, which the destination absorbs, rather than skipping the part of it
-	// that had not been written.
-	s.mu.Lock()
-	gtid := ""
-	if s.executed != nil {
-		gtid = s.executed.String()
-	}
-	s.mu.Unlock()
 
 	if isUpdate {
-		// Update rows arrive as before/after pairs.
-		for i := 0; i+1 < len(e.Rows); i += 2 {
-			ev, err := s.build(ctx, meta, cdc.OpUpdate,
-				align.row(e.Rows[i]), align.row(e.Rows[i+1]), timestamp, gtid)
-			if err != nil {
-				return err
-			}
-			if err := send(ctx, out, ev); err != nil {
-				return err
-			}
-		}
-		return nil
+		return s.emitUpdates(ctx, em, e.Rows, out)
 	}
+	return s.emitEach(ctx, em, operation, e.Rows, out)
+}
 
-	for _, row := range e.Rows {
-		var before, after cdc.Row
-		if op == cdc.OpDelete {
-			before = align.row(row)
-		} else {
-			after = align.row(row)
+// emission is what every event built from one rows event shares.
+type emission struct {
+	align     alignment
+	timestamp time.Time
+	gtid      string
+}
+
+// positionForRows reports the position to stamp on a transaction's rows.
+//
+// It excludes the transaction the rows belong to, because it is not finished yet. A restart
+// therefore replays this transaction in full, which the destination absorbs, rather than
+// skipping the part of it that had not been written.
+func (s *Streamer) positionForRows() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.executed == nil {
+		return ""
+	}
+	return s.executed.String()
+}
+
+// emitUpdates sends one event per row pair, which is how update rows arrive.
+func (s *Streamer) emitUpdates(ctx context.Context, em emission, rows [][]any, out chan<- cdc.ChangeEvent) error {
+	for i := 0; i+1 < len(rows); i += 2 {
+		ev, err := s.build(ctx, em.align.meta, cdc.OperationUpdate,
+			em.align.row(rows[i]), em.align.row(rows[i+1]), em.timestamp, em.gtid)
+		if err != nil {
+			return err
 		}
-		ev, err := s.build(ctx, meta, op, before, after, timestamp, gtid)
+		if err := send(ctx, out, ev); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// emitEach sends one event per row, carrying the values on the side the operation writes.
+func (s *Streamer) emitEach(ctx context.Context, em emission, operation cdc.Operation, rows [][]any, out chan<- cdc.ChangeEvent) error {
+	for _, row := range rows {
+		var before, after cdc.Row
+		if operation == cdc.OperationDelete {
+			before = em.align.row(row)
+		} else {
+			after = em.align.row(row)
+		}
+		ev, err := s.build(ctx, em.align.meta, operation, before, after, em.timestamp, em.gtid)
 		if err != nil {
 			return err
 		}
@@ -442,14 +464,14 @@ func (s *Streamer) alignment(ctx context.Context, e *replication.RowsEvent, meta
 	return alignment{meta: reloaded, positions: positions}, nil
 }
 
-func (s *Streamer) build(ctx context.Context, meta *schema.TableMeta, op cdc.Op, before, after cdc.Row, ts time.Time, gtid string) (cdc.ChangeEvent, error) {
+func (s *Streamer) build(ctx context.Context, meta *schema.TableMeta, operation cdc.Operation, before, after cdc.Row, ts time.Time, gtid string) (cdc.ChangeEvent, error) {
 	seq, err := s.opts.Sequencer.Next(ctx)
 	if err != nil {
 		return cdc.ChangeEvent{}, fmt.Errorf("binlog: allocate version: %w", err)
 	}
 	return cdc.ChangeEvent{
 		Meta:      meta,
-		Op:        op,
+		Operation: operation,
 		Before:    before,
 		After:     after,
 		Timestamp: ts,
@@ -469,19 +491,19 @@ func send(ctx context.Context, out chan<- cdc.ChangeEvent, ev cdc.ChangeEvent) e
 	}
 }
 
-// opFor maps an event type onto an operation.
+// operationFor maps an event type onto an operation.
 //
 // The third result reports whether the type was recognised at all. It cannot be
-// inferred from the operation, because OpInsert is the zero value: using that as a
+// inferred from the operation, because OperationInsert is the zero value: using that as a
 // sentinel silently discards every insert.
-func opFor(t replication.EventType) (op cdc.Op, isUpdate, recognised bool) {
+func operationFor(t replication.EventType) (operation cdc.Operation, isUpdate, recognised bool) {
 	switch t {
 	case replication.WRITE_ROWS_EVENTv0, replication.WRITE_ROWS_EVENTv1, replication.WRITE_ROWS_EVENTv2:
-		return cdc.OpInsert, false, true
+		return cdc.OperationInsert, false, true
 	case replication.DELETE_ROWS_EVENTv0, replication.DELETE_ROWS_EVENTv1, replication.DELETE_ROWS_EVENTv2:
-		return cdc.OpDelete, false, true
+		return cdc.OperationDelete, false, true
 	case replication.UPDATE_ROWS_EVENTv0, replication.UPDATE_ROWS_EVENTv1, replication.UPDATE_ROWS_EVENTv2:
-		return cdc.OpUpdate, true, true
+		return cdc.OperationUpdate, true, true
 	default:
 		return 0, false, false
 	}

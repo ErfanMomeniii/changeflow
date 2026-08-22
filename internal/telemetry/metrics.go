@@ -55,7 +55,7 @@ func New(reg prometheus.Registerer, stream string) *Metrics {
 			Name:        "changeflow_events_total",
 			Help:        "Change events read from the source, by operation.",
 			ConstLabels: labels,
-		}, []string{"op"}),
+		}, []string{"operation"}),
 
 		docsWritten: factory.counter(prometheus.CounterOpts{
 			Name:        "changeflow_documents_written_total",
@@ -140,11 +140,11 @@ func New(reg prometheus.Registerer, stream string) *Metrics {
 }
 
 // Event records one change read from the source.
-func (m *Metrics) Event(op cdc.Op) {
+func (m *Metrics) Event(operation cdc.Operation) {
 	if m == nil {
 		return
 	}
-	m.events.WithLabelValues(op.String()).Inc()
+	m.events.WithLabelValues(operation.String()).Inc()
 }
 
 // Lag records how far behind the source a just-applied event was.

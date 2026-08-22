@@ -4,6 +4,7 @@ package supervisor
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -38,10 +39,7 @@ func (s *Supervisor) backfill(ctx context.Context, sess *session, runtimes []*st
 // the one stamped on scanned rows. A row modified while being scanned therefore ends up
 // with the modification, never the stale copy.
 func (s *Supervisor) snapshotIfNeeded(ctx context.Context, sess *session, rt *streamRuntime) (string, error) {
-	stream := rt.cfg
-	store, sourceDB := sess.store, sess.sourceDB
-
-	cp, err := store.Load(ctx, stream.Name)
+	cp, err := sess.store.Load(ctx, rt.cfg.Name)
 	if err != nil && !errors.Is(err, checkpoint.ErrNotFound) {
 		// A position that cannot be read must never be guessed at: streaming from the
 		// wrong place silently skips or duplicates data.
@@ -52,82 +50,101 @@ func (s *Supervisor) snapshotIfNeeded(ctx context.Context, sess *session, rt *st
 	if cp.SnapshotDone && cp.GTIDSet != "" {
 		return cp.GTIDSet, nil
 	}
-
-	if !stream.Snapshot.Enabled {
-		if cp.GTIDSet != "" {
-			return cp.GTIDSet, nil
-		}
-		position, err := currentPosition(ctx, sourceDB)
-		if err != nil {
-			return "", err
-		}
-		s.log.Warn("snapshots are disabled, so rows written before now will not appear in the destination",
-			"stream", stream.Name, "from", position)
-		cp.Stream, cp.SnapshotDone, cp.GTIDSet = stream.Name, true, position
-		if err := store.Save(ctx, cp); err != nil {
-			return "", fmt.Errorf("supervisor: record start position: %w", err)
-		}
-		return position, nil
+	if !rt.cfg.Snapshot.Enabled {
+		return s.startWithoutSnapshot(ctx, sess, rt, cp)
 	}
 
-	// A first attempt captures the position and the version to stamp on scanned rows. A
-	// resumed attempt keeps both, or the guarantee above would not hold.
-	if cp.SnapshotStartGTID == "" {
-		position, err := currentPosition(ctx, sourceDB)
-		if err != nil {
-			return "", err
-		}
-		baseSeq, err := rt.alloc.Next(ctx)
-		if err != nil {
-			return "", fmt.Errorf("supervisor: allocate the snapshot version: %w", err)
-		}
+	cp, err = s.markScanStarted(ctx, sess, rt, cp)
+	if err != nil {
+		return "", err
+	}
+	return s.runScan(ctx, sess, rt, cp)
+}
 
-		cp.Stream = stream.Name
-		cp.SnapshotStartGTID = position
-		cp.SnapshotBaseSeq = baseSeq
-		cp.SnapshotRowsTotal = estimateRows(ctx, sourceDB, rt.meta)
-		if err := store.Save(ctx, cp); err != nil {
-			return "", fmt.Errorf("supervisor: record the snapshot start: %w", err)
-		}
-		s.log.Info("starting a table scan",
-			"stream", stream.Name, "table", stream.Table,
-			"from_position", position, "estimated_rows", cp.SnapshotRowsTotal)
-	} else {
+// startWithoutSnapshot begins at the source's current position for a stream configured not
+// to scan, and records that as a finished snapshot so later starts resume normally.
+func (s *Supervisor) startWithoutSnapshot(
+	ctx context.Context,
+	sess *session,
+	rt *streamRuntime,
+	cp checkpoint.Checkpoint,
+) (string, error) {
+	if cp.GTIDSet != "" {
+		return cp.GTIDSet, nil
+	}
+
+	position, err := currentPosition(ctx, sess.sourceDB)
+	if err != nil {
+		return "", err
+	}
+	s.log.Warn("snapshots are disabled, so rows written before now will not appear in the destination",
+		"stream", rt.cfg.Name, "from", position)
+
+	cp.Stream, cp.SnapshotDone, cp.GTIDSet = rt.cfg.Name, true, position
+	if err := sess.store.Save(ctx, cp); err != nil {
+		return "", fmt.Errorf("supervisor: record start position: %w", err)
+	}
+	return position, nil
+}
+
+// markScanStarted records what a scan must be anchored to before it reads a row.
+//
+// A first attempt captures the position and the version to stamp on scanned rows. A resumed
+// attempt keeps both, or the guarantee above would not hold.
+func (s *Supervisor) markScanStarted(
+	ctx context.Context,
+	sess *session,
+	rt *streamRuntime,
+	cp checkpoint.Checkpoint,
+) (checkpoint.Checkpoint, error) {
+	if cp.SnapshotStartGTID != "" {
 		s.log.Info("resuming a table scan",
-			"stream", stream.Name, "rows_done", cp.SnapshotRowsDone, "estimated_rows", cp.SnapshotRowsTotal)
+			"stream", rt.cfg.Name, "rows_done", cp.SnapshotRowsDone, "estimated_rows", cp.SnapshotRowsTotal)
+		return cp, nil
 	}
 
-	scanDB := sourceDB
+	position, err := currentPosition(ctx, sess.sourceDB)
+	if err != nil {
+		return cp, err
+	}
+	baseSeq, err := rt.alloc.Next(ctx)
+	if err != nil {
+		return cp, fmt.Errorf("supervisor: allocate the snapshot version: %w", err)
+	}
+
+	cp.Stream = rt.cfg.Name
+	cp.SnapshotStartGTID = position
+	cp.SnapshotBaseSeq = baseSeq
+	cp.SnapshotRowsTotal = estimateRows(ctx, sess.sourceDB, rt.meta)
+	if err := sess.store.Save(ctx, cp); err != nil {
+		return cp, fmt.Errorf("supervisor: record the snapshot start: %w", err)
+	}
+	s.log.Info("starting a table scan",
+		"stream", rt.cfg.Name, "table", rt.cfg.Table,
+		"from_position", position, "estimated_rows", cp.SnapshotRowsTotal)
+	return cp, nil
+}
+
+// runScan reads the table into the destination and reports where streaming begins.
+func (s *Supervisor) runScan(
+	ctx context.Context,
+	sess *session,
+	rt *streamRuntime,
+	cp checkpoint.Checkpoint,
+) (string, error) {
+	scanDB := sess.sourceDB
 	if s.cfg.Source.SnapshotDSN != "" {
 		// A scan is the only part of changeflow that can slow the source down, so it can
 		// be pointed at a replica instead.
-		scanDB, err = openMySQL(ctx, s.cfg.Source.SnapshotDSN)
+		replica, err := openMySQL(ctx, s.cfg.Source.SnapshotDSN)
 		if err != nil {
 			return "", fmt.Errorf("supervisor: connect for the table scan: %w", err)
 		}
-		defer scanDB.Close()
+		defer replica.Close()
+		scanDB = replica
 	}
 
-	key, err := rt.meta.ResolveKey(stream.Mapping.Key)
-	if err != nil {
-		return "", fmt.Errorf("supervisor: %w", err)
-	}
-
-	estimated := cp.SnapshotRowsTotal
-	scanner, err := snapshot.New(snapshot.Options{
-		DB:            scanDB,
-		Meta:          rt.meta,
-		Key:           key,
-		ChunkSize:     stream.Snapshot.ChunkSize,
-		MaxRowsPerSec: stream.Snapshot.MaxRateRowsPerSec,
-		Cursor:        cp.SnapshotCursor,
-		BaseSeq:       cp.SnapshotBaseSeq,
-		Observe: func(rows uint64) {
-			rt.metrics.SnapshotProgress(rows, estimated)
-			s.log.Info("table scan progress", "stream", stream.Name, "rows", rows, "estimated_total", estimated)
-		},
-		Logger: s.log,
-	})
+	scanner, err := s.newScanner(scanDB, rt, cp)
 	if err != nil {
 		return "", err
 	}
@@ -143,18 +160,48 @@ func (s *Supervisor) snapshotIfNeeded(ctx context.Context, sess *session, rt *st
 		// or the rows it never reached would never be written.
 		return "", ctx.Err()
 	}
+	return s.finishScan(ctx, sess, rt)
+}
 
-	cp, err = store.Load(ctx, stream.Name)
+func (s *Supervisor) newScanner(scanDB *sql.DB, rt *streamRuntime, cp checkpoint.Checkpoint) (*snapshot.Snapshotter, error) {
+	key, err := rt.meta.ResolveKey(rt.cfg.Mapping.Key)
+	if err != nil {
+		return nil, fmt.Errorf("supervisor: %w", err)
+	}
+
+	estimated := cp.SnapshotRowsTotal
+	return snapshot.New(snapshot.Options{
+		DB:            scanDB,
+		Meta:          rt.meta,
+		Key:           key,
+		ChunkSize:     rt.cfg.Snapshot.ChunkSize,
+		MaxRowsPerSec: rt.cfg.Snapshot.MaxRateRowsPerSec,
+		Cursor:        cp.SnapshotCursor,
+		BaseSeq:       cp.SnapshotBaseSeq,
+		Observe: func(rows uint64) {
+			rt.metrics.SnapshotProgress(rows, estimated)
+			s.log.Info("table scan progress", "stream", rt.cfg.Name, "rows", rows, "estimated_total", estimated)
+		},
+		Logger: s.log,
+	})
+}
+
+// finishScan records a completed scan, moves readers onto what it filled, and reports where
+// streaming begins.
+func (s *Supervisor) finishScan(ctx context.Context, sess *session, rt *streamRuntime) (string, error) {
+	// Re-read rather than reuse: the pipeline has been advancing the row throughout the
+	// scan, so the copy taken at the start is stale.
+	cp, err := sess.store.Load(ctx, rt.cfg.Name)
 	if err != nil {
 		return "", fmt.Errorf("supervisor: read checkpoint after the scan: %w", err)
 	}
-	cp.Stream = stream.Name
+	cp.Stream = rt.cfg.Name
 	cp.SnapshotDone = true
 	cp.SnapshotRowsTotal = cp.SnapshotRowsDone
-	if err := store.Save(ctx, cp); err != nil {
+	if err := sess.store.Save(ctx, cp); err != nil {
 		return "", fmt.Errorf("supervisor: record the completed scan: %w", err)
 	}
-	s.log.Info("table scan complete", "stream", stream.Name, "rows", cp.SnapshotRowsDone)
+	s.log.Info("table scan complete", "stream", rt.cfg.Name, "rows", cp.SnapshotRowsDone)
 
 	if err := s.promoteAlias(ctx, rt); err != nil {
 		return "", err
