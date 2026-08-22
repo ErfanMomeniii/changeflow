@@ -4,7 +4,6 @@ package supervisor
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -14,6 +13,23 @@ import (
 	"github.com/ErfanMomeniii/changeflow/internal/source/snapshot"
 )
 
+// backfill runs any outstanding table scan and reports where each stream is to start
+// streaming from.
+//
+// One stream at a time: reading two tables at once would double the load a backfill puts on
+// the source without finishing any sooner.
+func (s *Supervisor) backfill(ctx context.Context, sess *session, runtimes []*streamRuntime) (map[string]string, error) {
+	positions := make(map[string]string, len(runtimes))
+	for _, rt := range runtimes {
+		position, err := s.snapshotIfNeeded(ctx, sess, rt)
+		if err != nil {
+			return nil, err
+		}
+		positions[rt.cfg.Name] = position
+	}
+	return positions, nil
+}
+
 // snapshotIfNeeded runs a stream's table scan when one is outstanding, and returns where
 // its streaming should begin.
 //
@@ -21,13 +37,9 @@ import (
 // changes made during the scan are still in the binlog afterwards and carry versions above
 // the one stamped on scanned rows. A row modified while being scanned therefore ends up
 // with the modification, never the stale copy.
-func (s *Supervisor) snapshotIfNeeded(
-	ctx context.Context,
-	store *checkpoint.MySQLStore,
-	sourceDB *sql.DB,
-	rt *streamRuntime,
-) (string, error) {
+func (s *Supervisor) snapshotIfNeeded(ctx context.Context, sess *session, rt *streamRuntime) (string, error) {
 	stream := rt.cfg
+	store, sourceDB := sess.store, sess.sourceDB
 
 	cp, err := store.Load(ctx, stream.Name)
 	if err != nil && !errors.Is(err, checkpoint.ErrNotFound) {

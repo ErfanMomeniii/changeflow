@@ -28,7 +28,6 @@ import (
 	"github.com/ErfanMomeniii/changeflow/internal/schema"
 	"github.com/ErfanMomeniii/changeflow/internal/sink"
 	"github.com/ErfanMomeniii/changeflow/internal/sink/dlq"
-	"github.com/ErfanMomeniii/changeflow/internal/source/binlog"
 	"github.com/ErfanMomeniii/changeflow/internal/telemetry"
 )
 
@@ -52,6 +51,8 @@ type Supervisor struct {
 	dlqDir  string
 
 	registry *prometheus.Registry
+	// metrics is one set of series per stream, keyed by stream name.
+	metrics map[string]*telemetry.Metrics
 
 	mu      sync.Mutex
 	running []*streamRuntime
@@ -101,11 +102,8 @@ func (s *streamState) snapshot() (bool, time.Time, error) {
 	return s.streaming, s.lastEvent, s.lastError
 }
 
-// New prepares a supervisor.
-//
-// Naming no stream runs every configured one, which is the normal case. Naming one runs it
-// alone, which is how a noisy table is isolated from its siblings and how a stream that has
-// fallen behind is caught up before rejoining them.
+// New prepares a supervisor: it resolves which streams will run and registers everything
+// they report through, so a run only has to connect and start them.
 func New(cfg *config.Config, streamName, dlqDir string, log *slog.Logger) (*Supervisor, error) {
 	if log == nil {
 		log = slog.Default()
@@ -114,94 +112,160 @@ func New(cfg *config.Config, streamName, dlqDir string, log *slog.Logger) (*Supe
 		return nil, errors.New("supervisor: a dead letter directory is required, since a refused document must be recorded before its position advances")
 	}
 
-	var streams []*config.Stream
+	streams, err := selectStreams(cfg, streamName)
+	if err != nil {
+		return nil, err
+	}
+
+	registry := prometheus.NewRegistry()
+	// Memory and file descriptor figures are the first things asked about when a container
+	// keeps restarting.
+	registry.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
+	registry.MustRegister(collectors.NewGoCollector())
+
+	// Registered as the supervisor is built rather than as each stream starts, so a scrape
+	// during a long startup reports every stream at zero instead of appearing to have none.
+	metrics := make(map[string]*telemetry.Metrics, len(streams))
+	for _, stream := range streams {
+		metrics[stream.Name] = telemetry.New(registry, stream.Name)
+	}
+
+	return &Supervisor{
+		cfg:      cfg,
+		streams:  streams,
+		log:      log,
+		dlqDir:   dlqDir,
+		registry: registry,
+		metrics:  metrics,
+	}, nil
+}
+
+// selectStreams resolves which of the configured streams a supervisor runs.
+//
+// Naming no stream runs every configured one, which is the normal case. Naming one runs it
+// alone, which is how a noisy table is isolated from its siblings and how a stream that has
+// fallen behind is caught up before rejoining them.
+func selectStreams(cfg *config.Config, streamName string) ([]*config.Stream, error) {
 	if streamName != "" {
 		stream, err := cfg.Stream(streamName)
 		if err != nil {
 			return nil, err
 		}
-		streams = []*config.Stream{stream}
-	} else {
-		// Sorted, so startup order and logs do not vary between runs.
-		for _, name := range cfg.StreamNames() {
-			streams = append(streams, cfg.Streams[name])
-		}
-	}
-	if len(streams) == 0 {
-		return nil, errors.New("supervisor: no streams are configured")
+		return []*config.Stream{stream}, nil
 	}
 
-	return &Supervisor{cfg: cfg, streams: streams, dlqDir: dlqDir, log: log}, nil
+	// Sorted, so startup order and logs do not vary between runs.
+	names := cfg.StreamNames()
+	if len(names) == 0 {
+		return nil, errors.New("supervisor: no streams are configured")
+	}
+	streams := make([]*config.Stream, 0, len(names))
+	for _, name := range names {
+		streams = append(streams, cfg.Streams[name])
+	}
+	return streams, nil
 }
 
 // Run starts every stream and blocks until the context ends or something fails.
+//
+// The sequence is the contract: report before working, refuse an unusable source, claim and
+// validate every stream, finish any outstanding scan, and only then stream.
 func (s *Supervisor) Run(ctx context.Context) error {
-	s.registry = prometheus.NewRegistry()
-	// Memory and file descriptor figures are the first things asked about when a container
-	// keeps restarting.
-	s.registry.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
-	s.registry.MustRegister(collectors.NewGoCollector())
+	stopTelemetry := s.serveTelemetry(ctx)
+	defer stopTelemetry()
 
-	if s.cfg.Runtime.MetricsEnabled() {
-		server := telemetry.NewServer(s.cfg.Runtime.MetricsAddr, s.registry, telemetry.Health{Ready: s.ready})
-		go func() {
-			if err := server.Start(ctx); err != nil {
-				// Losing observability is serious but not a reason to stop replicating.
-				s.log.Error("metrics endpoint stopped", "error", err)
-			}
-		}()
-		defer server.Shutdown()
-		s.log.Info("serving metrics and health", "address", s.cfg.Runtime.MetricsAddr)
-	}
-
-	sourceDB, err := openMySQL(ctx, s.cfg.Source.DSN)
-	if err != nil {
-		return fmt.Errorf("supervisor: connect to source: %w", err)
-	}
-	defer sourceDB.Close()
-
-	if err := s.checkSource(ctx, sourceDB); err != nil {
-		return err
-	}
-
-	metaDB, err := openMySQL(ctx, s.cfg.Checkpoint.DSN)
-	if err != nil {
-		return fmt.Errorf("supervisor: connect to checkpoint store: %w", err)
-	}
-	defer metaDB.Close()
-
-	store, err := checkpoint.NewMySQLStore(metaDB, s.cfg.Checkpoint.Table)
+	sess, err := s.connect(ctx)
 	if err != nil {
 		return err
 	}
-	if err := store.EnsureSchema(ctx); err != nil {
+	defer sess.close()
+
+	if err := s.checkSource(ctx, sess.sourceDB); err != nil {
 		return err
 	}
 
-	schemas := schema.NewStore(schema.DBLoader{DB: sourceDB})
-
-	runtimes, err := s.prepare(ctx, store, schemas)
+	runtimes, err := s.prepare(ctx, sess)
 	defer s.release(ctx, runtimes)
 	if err != nil {
 		return err
 	}
+	s.setRunning(runtimes)
 
-	s.mu.Lock()
-	s.running = runtimes
-	s.mu.Unlock()
-
-	// Scans run before streaming, one stream at a time. Reading two tables at once would
-	// double the load a backfill puts on the source without finishing any sooner.
-	positions := make(map[string]string, len(runtimes))
-	for _, rt := range runtimes {
-		position, err := s.snapshotIfNeeded(ctx, store, sourceDB, rt)
-		if err != nil {
-			return err
-		}
-		positions[rt.cfg.Name] = position
+	positions, err := s.backfill(ctx, sess, runtimes)
+	if err != nil {
+		return err
 	}
 
-	return s.stream(ctx, store, schemas, runtimes, positions)
+	return s.stream(ctx, sess, runtimes, positions)
+}
+
+// session is what one run connects to: the source, the checkpoint store, and a schema cache
+// reading from the source.
+type session struct {
+	sourceDB *sql.DB
+	metaDB   *sql.DB
+	store    *checkpoint.MySQLStore
+	schemas  *schema.Store
+}
+
+func (s *Supervisor) connect(ctx context.Context) (sess *session, err error) {
+	sess = &session{}
+	// Whatever was opened before a failure is closed here rather than left to the process.
+	defer func() {
+		if err != nil {
+			sess.close()
+			sess = nil
+		}
+	}()
+
+	sess.sourceDB, err = openMySQL(ctx, s.cfg.Source.DSN)
+	if err != nil {
+		return nil, fmt.Errorf("supervisor: connect to source: %w", err)
+	}
+	sess.schemas = schema.NewStore(schema.DBLoader{DB: sess.sourceDB})
+
+	sess.metaDB, err = openMySQL(ctx, s.cfg.Checkpoint.DSN)
+	if err != nil {
+		return nil, fmt.Errorf("supervisor: connect to checkpoint store: %w", err)
+	}
+	if sess.store, err = checkpoint.NewMySQLStore(sess.metaDB, s.cfg.Checkpoint.Table); err != nil {
+		return nil, err
+	}
+	if err = sess.store.EnsureSchema(ctx); err != nil {
+		return nil, err
+	}
+	return sess, nil
+}
+
+func (sess *session) close() {
+	if sess.sourceDB != nil {
+		sess.sourceDB.Close()
+	}
+	if sess.metaDB != nil {
+		sess.metaDB.Close()
+	}
+}
+
+// serveTelemetry starts the metrics and health endpoint and returns the function that stops
+// it. Nothing is served when metrics are turned off.
+func (s *Supervisor) serveTelemetry(ctx context.Context) func() {
+	if !s.cfg.Runtime.MetricsEnabled() {
+		return func() {}
+	}
+
+	server := telemetry.NewServer(s.cfg.Runtime.MetricsAddr, s.registry, telemetry.Health{Ready: s.ready})
+	go func() {
+		if err := server.Start(ctx); err != nil {
+			// Losing observability is serious but not a reason to stop replicating.
+			s.log.Error("metrics endpoint stopped", "error", err)
+		}
+	}()
+	s.log.Info("serving metrics and health", "address", s.cfg.Runtime.MetricsAddr)
+	return func() {
+		if err := server.Shutdown(); err != nil {
+			s.log.Warn("could not stop the metrics endpoint", "error", err)
+		}
+	}
 }
 
 // checkSource refuses to replicate from a server that cannot support it.
@@ -229,220 +293,11 @@ func (s *Supervisor) checkSource(ctx context.Context, sourceDB *sql.DB) error {
 	return nil
 }
 
-// prepare builds each stream's parts, stopping at the first that cannot be built.
-//
-// Whatever was already created is returned even on failure, so locks and files are released
-// rather than held until the process exits.
-func (s *Supervisor) prepare(ctx context.Context, store *checkpoint.MySQLStore, schemas *schema.Store) ([]*streamRuntime, error) {
-	zone, err := time.LoadLocation(s.cfg.Source.TimeZone)
-	if err != nil {
-		return nil, fmt.Errorf("supervisor: source.time_zone %q: %w", s.cfg.Source.TimeZone, err)
-	}
-
-	var runtimes []*streamRuntime
-	for _, stream := range s.streams {
-		rt := &streamRuntime{cfg: stream, metrics: telemetry.New(s.registry, stream.Name)}
-		runtimes = append(runtimes, rt)
-
-		// Two processes replicating one stream would double-write and fight over a server
-		// id, and the resulting errors name neither culprit.
-		lock, err := store.Lock(ctx, stream.Name)
-		if err != nil {
-			return runtimes, fmt.Errorf("supervisor: %w", err)
-		}
-		rt.lock = lock
-
-		meta, err := schemas.Table(ctx, stream.Schema(), stream.TableName())
-		if err != nil {
-			return runtimes, fmt.Errorf("supervisor: %w", err)
-		}
-		rt.meta = meta
-
-		dialect, err := dialectFor(stream.Sink.Type)
-		if err != nil {
-			return runtimes, err
-		}
-
-		// Compiling now surfaces an unmappable column or an impossible key before any
-		// document is written.
-		plan, err := pipeline.Compile(meta, stream.Mapping, dialect, zone, stream.Mapping.OnZeroDate)
-		if err != nil {
-			return runtimes, fmt.Errorf("supervisor: %w", err)
-		}
-		rt.plan = plan
-
-		destination, err := buildSink(stream)
-		if err != nil {
-			return runtimes, err
-		}
-		rt.sink = destination
-
-		// A field declared as the wrong type does not fail the write: it changes the
-		// value, and correcting it later means rebuilding everything written meanwhile.
-		if err := s.validateDestination(ctx, stream, destination, meta); err != nil {
-			return runtimes, err
-		}
-
-		deadLetters, err := dlq.New(dlq.Options{Dir: s.dlqDir, Stream: stream.Name})
-		if err != nil {
-			return runtimes, err
-		}
-		rt.dlq = deadLetters
-
-		alloc, err := checkpoint.NewAllocator(ctx, store, stream.Name, seqBlockSize, time.Now)
-		if err != nil {
-			return runtimes, err
-		}
-		rt.alloc = alloc
-
-		runner, err := pipeline.NewRunner(pipeline.RunnerOptions{
-			Stream: stream.Name,
-			Plan:   plan,
-			Sink:   destination,
-			DLQ:    deadLetters,
-			Store:  store,
-			Limits: pipeline.Limits{
-				MaxRows:       stream.Batch.MaxRows,
-				MaxBytes:      stream.Batch.MaxBytes.Bytes(),
-				FlushInterval: stream.Batch.FlushInterval.Duration(),
-			},
-			ShutdownGrace: s.cfg.Runtime.ShutdownGrace.Duration(),
-			Observer:      &streamObserver{metrics: rt.metrics, state: &rt.state},
-			Logger:        s.log,
-		})
-		if err != nil {
-			return runtimes, err
-		}
-		rt.runner = runner
-		rt.events = make(chan cdc.ChangeEvent, s.cfg.Runtime.BufferSize)
-	}
-
-	return runtimes, nil
-}
-
-// release gives up locks and closes destinations.
-func (s *Supervisor) release(ctx context.Context, runtimes []*streamRuntime) {
-	// Detached from the caller's context, which is usually already cancelled by the time
-	// this runs.
-	ctx = context.WithoutCancel(ctx)
-
-	for _, rt := range runtimes {
-		if rt.sink != nil {
-			rt.sink.Close()
-		}
-		if rt.dlq != nil {
-			rt.dlq.Close()
-		}
-		if rt.lock != nil {
-			if err := rt.lock.Release(ctx); err != nil {
-				s.log.Warn("could not release the stream lock", "stream", rt.cfg.Name, "error", err)
-			}
-		}
-	}
-}
-
-// stream reads the source once and fans each change out to the streams that want it.
-func (s *Supervisor) stream(
-	ctx context.Context,
-	store *checkpoint.MySQLStore,
-	schemas *schema.Store,
-	runtimes []*streamRuntime,
-	positions map[string]string,
-) error {
-	// The shared position must be one no stream has passed, or a stream behind the others
-	// would never receive the changes it still needs.
-	startGTID, err := sharedStartPosition(positions)
-	if err != nil {
-		return err
-	}
-
-	router := NewRouter()
-	for _, rt := range runtimes {
-		router.Add(rt.cfg.Table, rt.events)
-	}
-
-	host, port, err := addressOf(s.cfg.Source.DSN)
-	if err != nil {
-		return err
-	}
-
-	// One reader, so one sequencer. Versions need only increase within a key, so streams
-	// drawing from a shared sequence is not a problem.
-	streamer, err := binlog.New(binlog.Options{
-		Host:            host,
-		Port:            port,
-		User:            usernameOf(s.cfg.Source.DSN),
-		Password:        passwordOf(s.cfg.Source.DSN),
-		ServerID:        s.cfg.Source.ServerID,
-		StartGTID:       startGTID,
-		Tables:          router.Tables(),
-		Schemas:         schemas,
-		Sequencer:       runtimes[0].alloc,
-		HeartbeatPeriod: s.cfg.Source.HeartbeatPeriod.Duration(),
-		ReadTimeout:     s.cfg.Source.ReadTimeout.Duration(),
-		Buffer:          s.cfg.Runtime.BufferSize,
-		Logger:          s.log,
-	})
-	if err != nil {
-		return err
-	}
-	defer streamer.Close()
-
-	names := make([]string, 0, len(runtimes))
-	for _, rt := range runtimes {
-		names = append(names, rt.cfg.Name)
-	}
-	s.log.Info("streaming started",
-		"streams", names, "tables", router.Tables(), "from", startGTID, "server_id", s.cfg.Source.ServerID)
-
-	group, groupCtx := newGroup(ctx)
-
-	// A pipeline per stream, each consuming its own queue.
-	for _, rt := range runtimes {
-		rt := rt
-		rt.state.set(true, nil)
-		// A previous run's failure is no longer the current state, and leaving it would
-		// have status reporting an error that has been resolved.
-		s.recordError(ctx, store, rt.cfg.Name, nil)
-		group.run(func() error {
-			err := rt.runner.Run(groupCtx, rt.events)
-			rt.state.set(false, err)
-			if err != nil && !errors.Is(err, context.Canceled) {
-				s.recordError(ctx, store, rt.cfg.Name, err)
-				return fmt.Errorf("stream %s: %w", rt.cfg.Name, err)
-			}
-			return nil
-		})
-		go s.reportQueueDepth(groupCtx, rt)
-	}
-
-	// The reader, fanning out to those pipelines.
-	group.run(func() error {
-		// Closing the queues is how each pipeline learns the source has ended and flushes
-		// what it holds.
-		defer router.Close()
-
-		for ev := range streamer.Events(groupCtx) {
-			if err := router.Route(groupCtx, ev); err != nil {
-				return err
-			}
-		}
-		if err := streamer.Err(); err != nil {
-			// The reader serves every stream, so its failure is recorded against all of
-			// them: each one has stopped, and each will be looked at on its own.
-			for _, rt := range runtimes {
-				s.recordError(ctx, store, rt.cfg.Name, err)
-			}
-			return fmt.Errorf("supervisor: source stopped: %w", err)
-		}
-		return nil
-	})
-
-	err = group.wait()
-	if errors.Is(err, context.Canceled) {
-		return nil
-	}
-	return err
+// setRunning publishes the prepared streams to health reporting.
+func (s *Supervisor) setRunning(runtimes []*streamRuntime) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.running = runtimes
 }
 
 // recordError keeps the reason a stream stopped in the checkpoint row, where `changeflow

@@ -15,13 +15,136 @@ import (
 
 	driver "github.com/go-sql-driver/mysql"
 
+	"github.com/ErfanMomeniii/changeflow/internal/cdc"
+	"github.com/ErfanMomeniii/changeflow/internal/checkpoint"
 	"github.com/ErfanMomeniii/changeflow/internal/config"
 	"github.com/ErfanMomeniii/changeflow/internal/pipeline"
 	"github.com/ErfanMomeniii/changeflow/internal/schema"
 	"github.com/ErfanMomeniii/changeflow/internal/sink"
 	"github.com/ErfanMomeniii/changeflow/internal/sink/clickhouse"
+	"github.com/ErfanMomeniii/changeflow/internal/sink/dlq"
 	"github.com/ErfanMomeniii/changeflow/internal/sink/elasticsearch"
 )
+
+// prepare builds each stream's parts, stopping at the first that cannot be built.
+//
+// Whatever was already created is returned even on failure, so locks and files are released
+// rather than held until the process exits.
+func (s *Supervisor) prepare(ctx context.Context, sess *session) ([]*streamRuntime, error) {
+	zone, err := time.LoadLocation(s.cfg.Source.TimeZone)
+	if err != nil {
+		return nil, fmt.Errorf("supervisor: source.time_zone %q: %w", s.cfg.Source.TimeZone, err)
+	}
+
+	runtimes := make([]*streamRuntime, 0, len(s.streams))
+	for _, stream := range s.streams {
+		rt := &streamRuntime{cfg: stream, metrics: s.metrics[stream.Name]}
+		runtimes = append(runtimes, rt)
+		if err := s.buildStream(ctx, sess, rt, zone); err != nil {
+			return runtimes, err
+		}
+	}
+	return runtimes, nil
+}
+
+// buildStream assembles one stream, in the order that surfaces a refusal soonest: the claim
+// on the stream, then what can be checked against the source and the destination, then the
+// parts that write.
+func (s *Supervisor) buildStream(ctx context.Context, sess *session, rt *streamRuntime, zone *time.Location) error {
+	stream := rt.cfg
+
+	// Two processes replicating one stream would double-write and fight over a server id,
+	// and the resulting errors name neither culprit.
+	lock, err := sess.store.Lock(ctx, stream.Name)
+	if err != nil {
+		return fmt.Errorf("supervisor: %w", err)
+	}
+	rt.lock = lock
+
+	rt.meta, err = sess.schemas.Table(ctx, stream.Schema(), stream.TableName())
+	if err != nil {
+		return fmt.Errorf("supervisor: %w", err)
+	}
+
+	dialect, err := dialectFor(stream.Sink.Type)
+	if err != nil {
+		return err
+	}
+
+	// Compiling now surfaces an unmappable column or an impossible key before any
+	// document is written.
+	rt.plan, err = pipeline.Compile(rt.meta, stream.Mapping, dialect, zone, stream.Mapping.OnZeroDate)
+	if err != nil {
+		return fmt.Errorf("supervisor: %w", err)
+	}
+
+	if rt.sink, err = buildSink(stream); err != nil {
+		return err
+	}
+
+	// A field declared as the wrong type does not fail the write: it changes the value, and
+	// correcting it later means rebuilding everything written meanwhile.
+	if err := s.validateDestination(ctx, stream, rt.sink, rt.meta); err != nil {
+		return err
+	}
+
+	if rt.dlq, err = dlq.New(dlq.Options{Dir: s.dlqDir, Stream: stream.Name}); err != nil {
+		return err
+	}
+
+	rt.alloc, err = checkpoint.NewAllocator(ctx, sess.store, stream.Name, seqBlockSize, time.Now)
+	if err != nil {
+		return err
+	}
+
+	if rt.runner, err = s.buildRunner(rt, sess.store); err != nil {
+		return err
+	}
+
+	rt.events = make(chan cdc.ChangeEvent, s.cfg.Runtime.BufferSize)
+	return nil
+}
+
+func (s *Supervisor) buildRunner(rt *streamRuntime, store *checkpoint.MySQLStore) (*pipeline.Runner, error) {
+	stream := rt.cfg
+
+	return pipeline.NewRunner(pipeline.RunnerOptions{
+		Stream: stream.Name,
+		Plan:   rt.plan,
+		Sink:   rt.sink,
+		DLQ:    rt.dlq,
+		Store:  store,
+		Limits: pipeline.Limits{
+			MaxRows:       stream.Batch.MaxRows,
+			MaxBytes:      stream.Batch.MaxBytes.Bytes(),
+			FlushInterval: stream.Batch.FlushInterval.Duration(),
+		},
+		ShutdownGrace: s.cfg.Runtime.ShutdownGrace.Duration(),
+		Observer:      &streamObserver{metrics: rt.metrics, state: &rt.state},
+		Logger:        s.log,
+	})
+}
+
+// release gives up locks and closes destinations.
+func (s *Supervisor) release(ctx context.Context, runtimes []*streamRuntime) {
+	// Detached from the caller's context, which is usually already cancelled by the time
+	// this runs.
+	ctx = context.WithoutCancel(ctx)
+
+	for _, rt := range runtimes {
+		if rt.sink != nil {
+			rt.sink.Close()
+		}
+		if rt.dlq != nil {
+			rt.dlq.Close()
+		}
+		if rt.lock != nil {
+			if err := rt.lock.Release(ctx); err != nil {
+				s.log.Warn("could not release the stream lock", "stream", rt.cfg.Name, "error", err)
+			}
+		}
+	}
+}
 
 // validateDestination compares a destination's schema against what its stream will write.
 func (s *Supervisor) validateDestination(ctx context.Context, stream *config.Stream, destination sink.Sink, meta *schema.TableMeta) error {
