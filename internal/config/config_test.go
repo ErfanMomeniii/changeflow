@@ -40,7 +40,6 @@ func mustLoad(t *testing.T, yaml string) *Config {
 
 func TestParseMinimalConfig(t *testing.T) {
 	cfg := mustLoad(t, minimalYAML)
-
 	if len(cfg.Streams) != 1 {
 		t.Fatalf("expected 1 stream, got %d", len(cfg.Streams))
 	}
@@ -56,7 +55,6 @@ func TestParseMinimalConfig(t *testing.T) {
 func TestDefaultsFillOmittedValues(t *testing.T) {
 	cfg := mustLoad(t, minimalYAML)
 	s := cfg.Streams["orders_to_es"]
-
 	for _, tc := range []struct {
 		name string
 		got  any
@@ -89,7 +87,6 @@ func TestExplicitValuesOverrideDefaults(t *testing.T) {
       flush_interval: 2s
 `)
 	s := cfg.Streams["orders_to_es"]
-
 	if s.Batch.MaxRows != 50000 {
 		t.Errorf("max_rows = %d, want 50000", s.Batch.MaxRows)
 	}
@@ -104,7 +101,6 @@ func TestExplicitValuesOverrideDefaults(t *testing.T) {
 func TestEnvExpansion(t *testing.T) {
 	env := map[string]string{"MYSQL_DSN": "cdc:secret@tcp(db:3306)/", "ES_URL": "http://es:9200"}
 	lookup := func(k string) (string, bool) { v, ok := env[k]; return v, ok }
-
 	cfg, err := Parse([]byte(`
 source:
   dsn: "${MYSQL_DSN}"
@@ -122,7 +118,6 @@ streams:
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-
 	if cfg.Source.DSN != "cdc:secret@tcp(db:3306)/" {
 		t.Errorf("dsn not expanded: %q", cfg.Source.DSN)
 	}
@@ -368,7 +363,6 @@ streams:
 			t.Errorf("error should mention %q, got: %v", want, err)
 		}
 	}
-
 	complete := `
 source:
   dsn: x
@@ -446,7 +440,6 @@ streams:
     table: a.d
     sink: {type: elasticsearch, addresses: [x], index: k}
 `)
-
 	got := cfg.StreamNames()
 	want := []string{"alpha", "middle", "zebra"}
 	for i := range want {
@@ -459,10 +452,8 @@ streams:
 func TestMemoryEstimateAccountsForBuffersAndBatches(t *testing.T) {
 	cfg := mustLoad(t, minimalYAML)
 	s := cfg.Streams["orders_to_es"]
-
 	want := uint64(cfg.Runtime.BufferSize)*cfg.Runtime.AssumedRowBytes.Bytes() +
 		uint64(s.Sink.Workers)*s.Batch.MaxBytes.Bytes()
-
 	if got := cfg.EstimatedMemory(); got != want {
 		t.Fatalf("EstimatedMemory() = %d, want %d", got, want)
 	}
@@ -472,12 +463,10 @@ func TestMemoryEstimateAccountsForBuffersAndBatches(t *testing.T) {
 // it is better refused at startup than discovered under load.
 func TestConfigExceedingMemoryLimitIsRejected(t *testing.T) {
 	cfg := mustLoad(t, minimalYAML)
-
 	tiny := int64(cfg.EstimatedMemory() / 2)
 	if err := cfg.CheckMemoryLimit(tiny); err == nil {
 		t.Fatal("expected a config needing more memory than the limit to be rejected")
 	}
-
 	if err := cfg.CheckMemoryLimit(math.MaxInt64); err != nil {
 		t.Fatalf("expected no error when no meaningful limit is set: %v", err)
 	}
@@ -490,7 +479,6 @@ func TestMetricsCanBeDisabledExplicitly(t *testing.T) {
 	if cfg.Runtime.MetricsEnabled() {
 		t.Error("metrics_addr: off should disable the endpoint")
 	}
-
 	def := mustLoad(t, minimalYAML)
 	if !def.Runtime.MetricsEnabled() {
 		t.Errorf("the default %q should serve metrics", def.Runtime.MetricsAddr)
@@ -502,7 +490,6 @@ func TestMetricsCanBeDisabledExplicitly(t *testing.T) {
 
 func TestStreamLookupReportsUnknownName(t *testing.T) {
 	cfg := mustLoad(t, minimalYAML)
-
 	if _, err := cfg.Stream("orders_to_es"); err != nil {
 		t.Fatalf("expected a configured stream to be found: %v", err)
 	}
@@ -510,7 +497,6 @@ func TestStreamLookupReportsUnknownName(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error for an unknown stream")
 	}
-	// The message should help, by listing what does exist.
 	if !strings.Contains(err.Error(), "orders_to_es") {
 		t.Fatalf("error should list configured streams, got: %v", err)
 	}

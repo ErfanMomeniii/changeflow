@@ -7,7 +7,6 @@ import (
 	"github.com/ErfanMomeniii/changeflow/internal/cdc"
 )
 
-// benchDocs builds a batch the size a real stream sends.
 func benchDocs(n int) []cdc.Doc {
 	docs := make([]cdc.Doc, 0, n)
 	for i := 0; i < n; i++ {
@@ -26,7 +25,6 @@ func BenchmarkEncodeBulk(b *testing.B) {
 		b.Fatal(err)
 	}
 	docs := benchDocs(1000)
-
 	b.ReportAllocs()
 	b.SetBytes(int64(len(docs)))
 	b.ResetTimer()
@@ -50,23 +48,16 @@ func TestBulkEncodingStaysCheap(t *testing.T) {
 	if raceDetectorEnabled {
 		t.Skip("performance budgets are not measured under the race detector, which multiplies both time and allocation counts")
 	}
-
 	result := testing.Benchmark(BenchmarkEncodeBulk)
 	if result.N == 0 {
 		t.Fatal("benchmark did not run")
 	}
-
 	const docsPerBatch = 1000
 	nsPerDoc := result.NsPerOp() / docsPerBatch
 	allocsPerDoc := result.AllocsPerOp() / docsPerBatch
-
-	// A microsecond per document would make encoding a millisecond of every batch,
-	// which is the same order as the request itself.
 	if nsPerDoc > 1_000 {
 		t.Errorf("%dns per document to encode, budget is 1000ns; %s", nsPerDoc, result.String())
 	}
-	// Bodies are appended, not re-marshalled, so the count per document should be
-	// close to zero and grow only with buffer growth.
 	if allocsPerDoc > 2 {
 		t.Errorf("%d allocations per document, budget is 2; %s", allocsPerDoc, result.MemString())
 	}

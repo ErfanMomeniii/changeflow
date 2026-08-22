@@ -17,7 +17,6 @@ func newResnapshotCmd() *cobra.Command {
 		streamName string
 		confirm    bool
 	)
-
 	cmd := &cobra.Command{
 		Use:   "resnapshot",
 		Short: "Ask a stream to scan its table again on next start",
@@ -26,7 +25,6 @@ func newResnapshotCmd() *cobra.Command {
 			return resnapshot(cmd.Context(), path, streamName, confirm)
 		},
 	}
-
 	configFlag(cmd, &path)
 	cmd.Flags().StringVar(&streamName, "stream", "", "which configured stream to rescan")
 	cmd.Flags().BoolVar(&confirm, "confirm", false, "required: rescanning reads the whole table")
@@ -34,12 +32,6 @@ func newResnapshotCmd() *cobra.Command {
 	return cmd
 }
 
-// resnapshot asks a stream to scan its table again.
-//
-// The scan itself happens on the next start, not here: this only clears the state that
-// records one as finished. Rebuilding is how a mapping change is applied and how a lost
-// checkpoint is recovered from, and it is deliberately a separate, explicit step rather
-// than something a running process decides to do.
 func resnapshot(ctx context.Context, path, streamName string, confirm bool) error {
 	cfg, err := config.Load(path)
 	if err != nil {
@@ -49,28 +41,19 @@ func resnapshot(ctx context.Context, path, streamName string, confirm bool) erro
 	if err != nil {
 		return err
 	}
-
 	if !confirm {
-		// A full table read costs real time and load on the source, so it is not
-		// something to trigger by mistyping a stream name.
 		return fmt.Errorf("rescanning %s reads all of %s and rewrites the destination; pass --confirm to proceed",
 			streamName, stream.Table)
 	}
-
 	db, err := open(ctx, cfg.Checkpoint.DSN)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-
 	store, err := checkpoint.NewMySQLStore(db, cfg.Checkpoint.Table)
 	if err != nil {
 		return err
 	}
-
-	// The lock is held for a stream's lifetime, so failing to take it means the stream
-	// is running. Clearing its scan state underneath it would have it rescan at a
-	// moment nobody chose.
 	lock, err := store.Lock(ctx, streamName)
 	if err != nil {
 		if errors.Is(err, checkpoint.ErrStreamLocked) {
@@ -79,7 +62,6 @@ func resnapshot(ctx context.Context, path, streamName string, confirm bool) erro
 		return err
 	}
 	defer lock.Release(ctx)
-
 	cp, err := store.Load(ctx, streamName)
 	switch {
 	case errors.Is(err, checkpoint.ErrNotFound), errors.Is(err, checkpoint.ErrNotInitialized):
@@ -87,13 +69,11 @@ func resnapshot(ctx context.Context, path, streamName string, confirm bool) erro
 	case err != nil:
 		return err
 	}
-
 	previous := cp.SnapshotRowsDone
 	cp.ClearSnapshot()
 	if err := store.Save(ctx, cp); err != nil {
 		return err
 	}
-
 	fmt.Printf("stream %s will scan %s again on next start\n", streamName, stream.Table)
 	if previous > 0 {
 		fmt.Printf("  the previous scan had read %d rows\n", previous)
@@ -102,8 +82,6 @@ func resnapshot(ctx context.Context, path, streamName string, confirm bool) erro
 	return nil
 }
 
-// printRebuildAdvice says what has to be pointed somewhere new before the rescan starts, for
-// the destinations where readers would otherwise see a half-built copy.
 func printRebuildAdvice(stream *config.Stream) {
 	switch {
 	case stream.Sink.Type == config.SinkElasticsearch && stream.Sink.Alias != "":

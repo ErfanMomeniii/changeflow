@@ -50,12 +50,9 @@ func (k Kind) String() string {
 
 // Mapped is one column's representation in each destination.
 type Mapped struct {
-	Kind Kind
-	// Elasticsearch is the field type for an index mapping.
+	Kind          Kind
 	Elasticsearch string
-	// ClickHouse is the column type expression, including any Nullable or
-	// LowCardinality wrapper.
-	ClickHouse string
+	ClickHouse    string
 }
 
 // Map converts a MySQL column into its destination types.
@@ -67,13 +64,10 @@ func Map(c Column) (Mapped, error) {
 	if c.Generated {
 		return Mapped{}, fmt.Errorf("column %s is generated, so it is absent from binlog row images and would always replicate as null", c.Name)
 	}
-
 	kind, es, ch, err := mapType(c)
 	if err != nil {
 		return Mapped{}, err
 	}
-
-	// ClickHouse requires LowCardinality on the outside of Nullable.
 	lowCardinality := strings.HasPrefix(ch, "LowCardinality(")
 	if lowCardinality {
 		ch = strings.TrimSuffix(strings.TrimPrefix(ch, "LowCardinality("), ")")
@@ -84,7 +78,6 @@ func Map(c Column) (Mapped, error) {
 	if lowCardinality {
 		ch = "LowCardinality(" + ch + ")"
 	}
-
 	return Mapped{Kind: kind, Elasticsearch: es, ClickHouse: ch}, nil
 }
 
@@ -97,7 +90,6 @@ func Supported(c Column) bool {
 func mapType(c Column) (Kind, string, string, error) {
 	switch strings.ToLower(c.DataType) {
 	case "tinyint":
-		// tinyint(1) is how MySQL stores a boolean by convention.
 		if !c.Unsigned && strings.HasPrefix(strings.ToLower(c.ColumnType), "tinyint(1)") {
 			return KindBool, "boolean", "Bool", nil
 		}
@@ -109,49 +101,35 @@ func mapType(c Column) (Kind, string, string, error) {
 	case "int", "integer":
 		return intTypes(c, "integer", "Int32", "long", "UInt32")
 	case "bigint":
-		// An Elasticsearch long is signed. Values above 2^63 need unsigned_long,
-		// or they wrap without complaint.
 		return intTypes(c, "long", "Int64", "unsigned_long", "UInt64")
-
 	case "decimal", "numeric":
 		precision, scale := c.NumericPrecision, c.NumericScale
 		if precision <= 0 {
-			precision, scale = 10, 0 // MySQL's default when unspecified
+			precision, scale = 10, 0
 		}
-		// Kept as a keyword: Elasticsearch has no exact decimal, and a float would
-		// change the value.
 		return KindDecimal, "keyword", fmt.Sprintf("Decimal(%d, %d)", precision, scale), nil
-
 	case "float":
 		return KindFloat, "float", "Float32", nil
 	case "double", "double precision", "real":
 		return KindFloat, "double", "Float64", nil
-
 	case "char", "varchar":
 		return KindString, "keyword", "String", nil
 	case "tinytext", "text", "mediumtext", "longtext":
 		return KindString, "text", "String", nil
-
 	case "binary", "varbinary", "tinyblob", "blob", "mediumblob", "longblob":
 		return KindBytes, "binary", "String", nil
-
 	case "json":
 		return KindJSON, "object", "String", nil
-
 	case "date":
-		// Date32 reaches before 1970; Date does not.
 		return KindDate, "date", "Date32", nil
 	case "datetime":
 		return KindDateTime, "date", fmt.Sprintf("DateTime64(%d)", c.DateTimePrecision), nil
 	case "timestamp":
-		// Already an instant in UTC, unlike DATETIME.
 		return KindTimestamp, "date", fmt.Sprintf("DateTime64(%d, 'UTC')", c.DateTimePrecision), nil
 	case "time":
-		// Neither destination has a time-of-day type, so microseconds it is.
 		return KindTime, "long", "Int64", nil
 	case "year":
 		return KindYear, "short", "UInt16", nil
-
 	case "enum":
 		if len(c.EnumValues) == 0 {
 			return 0, "", "", fmt.Errorf("column %s is an ENUM but no member labels are known; the binlog carries only member numbers, so writing them would corrupt the value (check binlog_row_metadata=FULL)", c.Name)
@@ -162,23 +140,17 @@ func mapType(c Column) (Kind, string, string, error) {
 			return 0, "", "", fmt.Errorf("column %s is a SET but no member labels are known; the binlog carries only a bitmask (check binlog_row_metadata=FULL)", c.Name)
 		}
 		return KindSet, "keyword", "Array(String)", nil
-
 	case "bit":
 		return KindBit, "long", "UInt64", nil
-
 	case "geometry", "point", "linestring", "polygon",
 		"multipoint", "multilinestring", "multipolygon",
 		"geometrycollection", "geomcollection":
 		return 0, "", "", fmt.Errorf("column %s has spatial type %s, which changeflow does not replicate; exclude it from the mapping", c.Name, c.DataType)
-
 	default:
 		return 0, "", "", fmt.Errorf("column %s has unrecognised type %q; changeflow refuses to guess how to represent it", c.Name, c.DataType)
 	}
 }
 
-// intTypes picks between the signed and unsigned representation of an integer
-// column. The unsigned Elasticsearch type is deliberately one size wider, since
-// the signed type could not hold the upper half of the range.
 func intTypes(c Column, signedES, signedCH, unsignedES, unsignedCH string) (Kind, string, string, error) {
 	if c.Unsigned {
 		return KindUint, unsignedES, unsignedCH, nil

@@ -30,7 +30,6 @@ func (l LoadSettings) Applied() bool { return l.applied }
 // which the caller decides — one that never refreshes answers searches with nothing.
 func (s *Sink) BeginBulkLoad(ctx context.Context) (LoadSettings, error) {
 	var previous LoadSettings
-
 	status, payload, err := s.do(ctx, http.MethodGet, "/"+s.opts.Index+"/_settings", nil)
 	if err != nil {
 		return previous, fmt.Errorf("elasticsearch: read the settings of %s: %w", s.opts.Index, err)
@@ -39,8 +38,6 @@ func (s *Sink) BeginBulkLoad(ctx context.Context) (LoadSettings, error) {
 		return previous, fmt.Errorf("elasticsearch: read the settings of %s: status %d: %s",
 			s.opts.Index, status, snippet(payload))
 	}
-
-	// Keyed by concrete index name, which is not necessarily the name requested.
 	var byIndex map[string]struct {
 		Settings struct {
 			Index struct {
@@ -55,15 +52,9 @@ func (s *Sink) BeginBulkLoad(ctx context.Context) (LoadSettings, error) {
 		previous.refreshInterval = entry.Settings.Index.RefreshInterval
 		break
 	}
-
-	// Reading back the value a killed scan left behind would make it the value to
-	// restore, and the index would never refresh again — while an alias was moved to it,
-	// so readers would find it empty. Nothing wants an index that never refreshes, so
-	// this is treated as a leftover and restored to the cluster default instead.
 	if refreshDisabled(previous.refreshInterval) {
 		previous.refreshInterval = nil
 	}
-
 	if err := s.putSettings(ctx, `{"index":{"refresh_interval":"-1"}}`); err != nil {
 		return previous, err
 	}
@@ -79,12 +70,10 @@ func (s *Sink) EndBulkLoad(ctx context.Context, previous LoadSettings) error {
 	if !previous.applied {
 		return nil
 	}
-
 	body := fmt.Sprintf(`{"index":{"refresh_interval":%s}}`, orNull(previous.refreshInterval))
 	if err := s.putSettings(ctx, body); err != nil {
 		return err
 	}
-
 	status, payload, err := s.do(ctx, http.MethodPost, "/"+s.opts.Index+"/_refresh", nil)
 	if err != nil {
 		return fmt.Errorf("elasticsearch: refresh %s: %w", s.opts.Index, err)
@@ -123,13 +112,10 @@ func (s *Sink) putSettings(ctx context.Context, body string) error {
 	return nil
 }
 
-// refreshDisabled reports whether a recorded interval is one that stops refreshing.
 func refreshDisabled(value json.RawMessage) bool {
 	return strings.Trim(string(value), `"`) == "-1"
 }
 
-// orNull renders a recorded setting, or null to clear the override when the index never
-// declared one.
 func orNull(value json.RawMessage) string {
 	if len(value) == 0 {
 		return "null"
@@ -137,14 +123,11 @@ func orNull(value json.RawMessage) string {
 	return string(value)
 }
 
-// do issues one administrative request. Document writes go through post instead, which
-// retries and balances; here a clear failure is more useful than a retry.
 func (s *Sink) do(ctx context.Context, method, path string, body []byte) (int, []byte, error) {
 	var reader io.Reader
 	if body != nil {
 		reader = bytes.NewReader(body)
 	}
-
 	req, err := http.NewRequestWithContext(ctx, method, s.nextAddress()+path, reader)
 	if err != nil {
 		return 0, nil, err
@@ -155,13 +138,11 @@ func (s *Sink) do(ctx context.Context, method, path string, body []byte) (int, [
 	if s.opts.Username != "" {
 		req.SetBasicAuth(s.opts.Username, s.opts.Password)
 	}
-
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return 0, nil, err
 	}
 	defer resp.Body.Close()
-
 	payload, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return resp.StatusCode, nil, err

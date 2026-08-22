@@ -7,7 +7,6 @@ import (
 	"github.com/ErfanMomeniii/changeflow/internal/cdc"
 )
 
-// fakeClock is a clock the test moves by hand.
 type fakeClock struct{ at time.Time }
 
 func (c *fakeClock) now() time.Time          { return c.at }
@@ -41,14 +40,12 @@ func keysOf(docs []cdc.Doc) []string {
 
 func TestBatcherHoldsDocsUntilRowLimit(t *testing.T) {
 	b, _ := newTestBatcher(t, Limits{MaxRows: 3, MaxBytes: 1 << 20, FlushInterval: time.Second})
-
 	if got := b.Add(doc("1", 1)); got != nil {
 		t.Fatalf("expected no flush after 1 of 3, got %d docs", len(got))
 	}
 	if got := b.Add(doc("2", 1)); got != nil {
 		t.Fatalf("expected no flush after 2 of 3, got %d docs", len(got))
 	}
-
 	flushed := b.Add(doc("3", 1))
 	if len(flushed) != 3 {
 		t.Fatalf("expected a flush of 3 docs, got %d", len(flushed))
@@ -63,12 +60,10 @@ func TestBatcherHoldsDocsUntilRowLimit(t *testing.T) {
 // rather than being appended to this one.
 func TestBatcherFlushesBeforeExceedingByteLimit(t *testing.T) {
 	b, _ := newTestBatcher(t, Limits{MaxRows: 1000, MaxBytes: 300, FlushInterval: time.Second})
-
 	if got := b.Add(doc("1", 100)); got != nil {
 		t.Fatal("expected no flush well under the byte limit")
 	}
-
-	flushed := b.Add(doc("2", 250)) // 101 + 251 would be 352, past the limit
+	flushed := b.Add(doc("2", 250))
 	if len(flushed) != 1 || flushed[0].Key != "1" {
 		t.Fatalf("expected only the documents that fit, got %v", keysOf(flushed))
 	}
@@ -83,10 +78,8 @@ func TestBatcherFlushesBeforeExceedingByteLimit(t *testing.T) {
 // Filling exactly to the limit should send, not wait.
 func TestBatcherFlushesWhenByteLimitIsReachedExactly(t *testing.T) {
 	b, _ := newTestBatcher(t, Limits{MaxRows: 1000, MaxBytes: 202, FlushInterval: time.Second})
-
-	b.Add(doc("1", 100)) // 101 bytes
+	b.Add(doc("1", 100))
 	flushed := b.Add(doc("2", 100))
-
 	if len(flushed) != 2 {
 		t.Fatalf("expected a flush of both documents at exactly the limit, got %v", keysOf(flushed))
 	}
@@ -96,9 +89,7 @@ func TestBatcherFlushesWhenByteLimitIsReachedExactly(t *testing.T) {
 // would wedge the stream permanently.
 func TestBatcherEmitsOversizedDocument(t *testing.T) {
 	b, _ := newTestBatcher(t, Limits{MaxRows: 1000, MaxBytes: 100, FlushInterval: time.Second})
-
 	flushed := b.Add(doc("huge", 5000))
-
 	if len(flushed) != 1 {
 		t.Fatalf("expected the oversized document to be flushed on its own, got %d docs", len(flushed))
 	}
@@ -111,11 +102,9 @@ func TestBatcherEmitsOversizedDocument(t *testing.T) {
 // them.
 func TestBatcherFlushesPendingBeforeOversizedDocument(t *testing.T) {
 	b, _ := newTestBatcher(t, Limits{MaxRows: 1000, MaxBytes: 100, FlushInterval: time.Second})
-
 	b.Add(doc("a", 10))
 	b.Add(doc("b", 10))
 	flushed := b.Add(doc("huge", 5000))
-
 	if want := []string{"a", "b", "huge"}; len(flushed) != 3 {
 		t.Fatalf("got %v, want %v", keysOf(flushed), want)
 	}
@@ -128,16 +117,13 @@ func TestBatcherFlushesPendingBeforeOversizedDocument(t *testing.T) {
 // bounded rather than resetting with every arrival.
 func TestBatcherIntervalRunsFromFirstDocument(t *testing.T) {
 	b, clock := newTestBatcher(t, Limits{MaxRows: 1000, MaxBytes: 1 << 20, FlushInterval: 500 * time.Millisecond})
-
 	b.Add(doc("1", 1))
 	clock.advance(300 * time.Millisecond)
 	b.Add(doc("2", 1))
-
 	if b.DueForFlush() {
 		t.Fatal("not due yet at 300ms")
 	}
-
-	clock.advance(250 * time.Millisecond) // 550ms since the first doc
+	clock.advance(250 * time.Millisecond)
 	if !b.DueForFlush() {
 		t.Fatal("expected the batch to be due 500ms after its first document")
 	}
@@ -145,9 +131,7 @@ func TestBatcherIntervalRunsFromFirstDocument(t *testing.T) {
 
 func TestBatcherIsNeverDueWhenEmpty(t *testing.T) {
 	b, clock := newTestBatcher(t, Limits{MaxRows: 10, MaxBytes: 1 << 20, FlushInterval: time.Millisecond})
-
 	clock.advance(time.Hour)
-
 	if b.DueForFlush() {
 		t.Fatal("an empty batcher must never ask to be flushed")
 	}
@@ -158,14 +142,12 @@ func TestBatcherIsNeverDueWhenEmpty(t *testing.T) {
 
 func TestBatcherResetsIntervalAfterFlush(t *testing.T) {
 	b, clock := newTestBatcher(t, Limits{MaxRows: 1000, MaxBytes: 1 << 20, FlushInterval: 500 * time.Millisecond})
-
 	b.Add(doc("1", 1))
 	clock.advance(600 * time.Millisecond)
 	if !b.DueForFlush() {
 		t.Fatal("expected due")
 	}
 	b.Flush()
-
 	b.Add(doc("2", 1))
 	if b.DueForFlush() {
 		t.Fatal("the interval must restart with the new batch")
@@ -176,14 +158,11 @@ func TestBatcherResetsIntervalAfterFlush(t *testing.T) {
 // delete could be undone by an earlier insert.
 func TestBatcherPreservesPerKeyOrder(t *testing.T) {
 	b, _ := newTestBatcher(t, Limits{MaxRows: 100, MaxBytes: 1 << 20, FlushInterval: time.Second})
-
 	b.Add(cdc.Doc{Key: "42", Version: 1, Body: []byte(`{"v":1}`)})
 	b.Add(cdc.Doc{Key: "99", Version: 2, Body: []byte(`{"v":2}`)})
 	b.Add(cdc.Doc{Key: "42", Version: 3, Deleted: true})
 	b.Add(cdc.Doc{Key: "42", Version: 4, Body: []byte(`{"v":4}`)})
-
 	flushed := b.Flush()
-
 	var versionsFor42 []uint64
 	for _, d := range flushed {
 		if d.Key == "42" {
@@ -204,17 +183,14 @@ func TestBatcherPreservesPerKeyOrder(t *testing.T) {
 // two must not share memory.
 func TestFlushedBatchIsNotAliasedByLaterAdds(t *testing.T) {
 	b, _ := newTestBatcher(t, Limits{MaxRows: 2, MaxBytes: 1 << 20, FlushInterval: time.Second})
-
 	b.Add(doc("a", 1))
 	flushed := b.Add(doc("b", 1))
 	if len(flushed) != 2 {
 		t.Fatalf("expected a flush of 2, got %d", len(flushed))
 	}
-
 	before := keysOf(flushed)
 	b.Add(doc("c", 1))
 	b.Add(doc("d", 1))
-
 	after := keysOf(flushed)
 	for i := range before {
 		if before[i] != after[i] {
@@ -225,13 +201,10 @@ func TestFlushedBatchIsNotAliasedByLaterAdds(t *testing.T) {
 
 func TestBatcherReportsSize(t *testing.T) {
 	b, _ := newTestBatcher(t, Limits{MaxRows: 100, MaxBytes: 1 << 20, FlushInterval: time.Second})
-
 	b.Add(cdc.Doc{Key: "ab", Body: []byte("12345")})
-
 	if b.Len() != 1 {
 		t.Errorf("Len() = %d, want 1", b.Len())
 	}
-	// Key and body both travel to the destination, so both count.
 	if b.Bytes() != 7 {
 		t.Errorf("Bytes() = %d, want 7", b.Bytes())
 	}
@@ -240,10 +213,8 @@ func TestBatcherReportsSize(t *testing.T) {
 // A delete carries no body but still occupies a slot and a key's worth of bytes.
 func TestBatcherCountsDeletes(t *testing.T) {
 	b, _ := newTestBatcher(t, Limits{MaxRows: 2, MaxBytes: 1 << 20, FlushInterval: time.Second})
-
 	b.Add(cdc.Doc{Key: "42", Deleted: true, Version: 1})
 	flushed := b.Add(cdc.Doc{Key: "43", Deleted: true, Version: 2})
-
 	if len(flushed) != 2 {
 		t.Fatalf("expected deletes to count toward the row limit, got %d", len(flushed))
 	}
@@ -260,8 +231,6 @@ func TestNewBatcherRejectsUnusableLimits(t *testing.T) {
 		{"negative interval", Limits{MaxRows: 10, MaxBytes: 100, FlushInterval: -time.Second}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// Without every limit set, a batch could be held indefinitely or flushed
-			// per document, and neither is a sane default to guess at.
 			if _, err := NewBatcher(tc.limits, nil); err == nil {
 				t.Fatalf("expected limits %+v to be rejected", tc.limits)
 			}
@@ -271,12 +240,10 @@ func TestNewBatcherRejectsUnusableLimits(t *testing.T) {
 
 func TestBatcherFlushReturnsDocsInArrivalOrder(t *testing.T) {
 	b, _ := newTestBatcher(t, Limits{MaxRows: 100, MaxBytes: 1 << 20, FlushInterval: time.Second})
-
 	want := []string{"first", "second", "third"}
 	for _, k := range want {
 		b.Add(doc(k, 1))
 	}
-
 	got := keysOf(b.Flush())
 	for i := range want {
 		if got[i] != want[i] {

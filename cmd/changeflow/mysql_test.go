@@ -12,7 +12,6 @@ func TestSplitHostPort(t *testing.T) {
 		{"host and port", "db.internal:3307", "db.internal", 3307},
 		{"host only defaults the port", "db.internal", "db.internal", 3306},
 		{"ipv4", "127.0.0.1:13306", "127.0.0.1", 13306},
-		// Splitting on the first colon would truncate this to "[".
 		{"bracketed ipv6 with port", "[::1]:3306", "::1", 3306},
 		{"bracketed ipv6 without port", "[2001:db8::1]", "2001:db8::1", 3306},
 	} {

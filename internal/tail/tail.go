@@ -1,10 +1,3 @@
-// Package tail registers as a MySQL replica, decodes row events, and prints them
-// in a human-readable form.
-//
-// It is a diagnostic: it answers "can we replicate from this server, and does its
-// binlog carry enough metadata to decode values correctly" without writing to any
-// destination. It can also record raw event bytes, which serve as fixtures for
-// decoding tests that need no live database.
 package tail
 
 import (
@@ -32,10 +25,10 @@ type Config struct {
 	User       string
 	Password   string
 	ServerID   uint32
-	Tables     []string // "db.table" filters; empty means every table
-	CaptureDir string   // when set, raw event bytes are written here as fixtures
+	Tables     []string
+	CaptureDir string
 	Duration   time.Duration
-	StartGTID  string // GTID set to stream from; typically @@GLOBAL.gtid_executed
+	StartGTID  string
 	Out        io.Writer
 }
 
@@ -49,40 +42,29 @@ func Tail(ctx context.Context, cfg Config) error {
 		ctx, cancel = context.WithTimeout(ctx, cfg.Duration)
 		defer cancel()
 	}
-
 	syncer := replication.NewBinlogSyncer(replication.BinlogSyncerConfig{
-		ServerID: cfg.ServerID,
-		Flavor:   "mysql",
-		Host:     cfg.Host,
-		Port:     cfg.Port,
-		User:     cfg.User,
-		Password: cfg.Password,
-		// Keep DECIMAL exact and DATETIME as the server wrote it, so what is
-		// printed is what the binlog carried rather than a lossy conversion.
-		UseDecimal: true,
-		ParseTime:  false,
-		// TIMESTAMP columns are stored as epoch seconds, so rendering them
-		// requires choosing a zone; left to the default it follows whatever zone
-		// the reader's host happens to be in, which silently shifts every value.
-		// DATETIME is unaffected: it is wall-clock text with no zone at all.
+		ServerID:                cfg.ServerID,
+		Flavor:                  "mysql",
+		Host:                    cfg.Host,
+		Port:                    cfg.Port,
+		User:                    cfg.User,
+		Password:                cfg.Password,
+		UseDecimal:              true,
+		ParseTime:               false,
 		TimestampStringLocation: time.UTC,
 		HeartbeatPeriod:         5 * time.Second,
 		ReadTimeout:             90 * time.Second,
 	})
 	defer syncer.Close()
-
 	gtidSet, err := mysql.ParseMysqlGTIDSet(cfg.StartGTID)
 	if err != nil {
 		return fmt.Errorf("parse start GTID %q: %w", cfg.StartGTID, err)
 	}
-
 	streamer, err := syncer.StartSyncGTID(gtidSet)
 	if err != nil {
 		return fmt.Errorf("start sync from %s: %w", cfg.StartGTID, err)
 	}
-
 	fmt.Fprintf(cfg.Out, "streaming from %s as server_id=%d\n\n", cfg.StartGTID, cfg.ServerID)
-
 	t := &tailer{cfg: cfg, want: parseFilters(cfg.Tables)}
 	if cfg.CaptureDir != "" {
 		if err := os.MkdirAll(cfg.CaptureDir, 0o755); err != nil {
@@ -90,7 +72,6 @@ func Tail(ctx context.Context, cfg Config) error {
 		}
 		defer t.writeManifest()
 	}
-
 	for {
 		ev, err := streamer.GetEvent(ctx)
 		switch {
@@ -141,31 +122,22 @@ func (t *tailer) tracked(schema, table string) bool {
 func (t *tailer) handle(ev *replication.BinlogEvent) error {
 	switch e := ev.Event.(type) {
 	case *replication.FormatDescriptionEvent:
-		// Describes the binlog's event layout, so any captured event is
-		// undecodable without it. Always captured, regardless of table filters.
 		return t.capture(ev, "format_description", "")
-
 	case *replication.GTIDEvent:
 		set, err := e.GTIDNext()
 		if err == nil {
 			t.gtid = set.String()
 		}
 		return nil
-
 	case *replication.XIDEvent:
-		// The transaction is over, so its GTID no longer applies. Clearing it
-		// prevents a stale value being attached to rows that arrive without a
-		// preceding GTID event, as happens after a reconnect.
 		t.gtid = ""
 		return nil
-
 	case *replication.TableMapEvent:
 		schema, table := string(e.Schema), string(e.Table)
 		if !t.tracked(schema, table) {
 			return nil
 		}
 		return t.capture(ev, "table_map", schema+"."+table)
-
 	case *replication.RowsEvent:
 		schema, table := string(e.Table.Schema), string(e.Table.Table)
 		if !t.tracked(schema, table) {
@@ -176,9 +148,7 @@ func (t *tailer) handle(ev *replication.BinlogEvent) error {
 			return err
 		}
 		return t.capture(ev, strings.ToLower(ev.Header.EventType.String()), schema+"."+table)
-
 	case *replication.QueryEvent:
-		// DDL arrives here, and it is what invalidates cached column metadata.
 		q := strings.TrimSpace(string(e.Query))
 		if q != "" && !strings.EqualFold(q, "BEGIN") {
 			fmt.Fprintf(t.cfg.Out, "query  %s\n", collapse(q))
@@ -193,26 +163,21 @@ func (t *tailer) printRows(typ replication.EventType, e *replication.RowsEvent) 
 	if len(names) == 0 {
 		return errors.New("binlog carries no column names: set binlog_row_metadata=FULL on the source (see preflight)")
 	}
-
 	tbl := fmt.Sprintf("%s.%s", e.Table.Schema, e.Table.Table)
 	gtid := ""
 	if t.gtid != "" {
 		gtid = "  gtid=" + t.gtid
 	}
-
 	switch typ {
 	case replication.WRITE_ROWS_EVENTv0, replication.WRITE_ROWS_EVENTv1, replication.WRITE_ROWS_EVENTv2:
 		for _, row := range e.Rows {
 			fmt.Fprintf(t.cfg.Out, "insert %s %s%s\n", tbl, formatRow(e.Table, names, row), gtid)
 		}
-
 	case replication.DELETE_ROWS_EVENTv0, replication.DELETE_ROWS_EVENTv1, replication.DELETE_ROWS_EVENTv2:
 		for _, row := range e.Rows {
 			fmt.Fprintf(t.cfg.Out, "delete %s %s%s\n", tbl, formatKey(e.Table, names, row), gtid)
 		}
-
 	case replication.UPDATE_ROWS_EVENTv0, replication.UPDATE_ROWS_EVENTv1, replication.UPDATE_ROWS_EVENTv2:
-		// Update rows arrive in before/after pairs.
 		for i := 0; i+1 < len(e.Rows); i += 2 {
 			before, after := e.Rows[i], e.Rows[i+1]
 			diff := formatDiff(e.Table, names, before, after)
@@ -225,9 +190,6 @@ func (t *tailer) printRows(typ replication.EventType, e *replication.RowsEvent) 
 	return nil
 }
 
-// keyIndexes returns the primary key column positions. A table with no primary
-// key has no reliable identity, so the second return value reports that the first
-// column is a guess rather than a key.
 func keyIndexes(meta *replication.TableMapEvent) (idx []int, isKey bool) {
 	if len(meta.PrimaryKey) > 0 {
 		out := make([]int, 0, len(meta.PrimaryKey))
@@ -241,7 +203,6 @@ func keyIndexes(meta *replication.TableMapEvent) (idx []int, isKey bool) {
 
 func formatKey(meta *replication.TableMapEvent, names []string, row []any) string {
 	idx, isKey := keyIndexes(meta)
-
 	var b strings.Builder
 	for n, i := range idx {
 		if i >= len(row) || i >= len(names) {
@@ -253,8 +214,6 @@ func formatKey(meta *replication.TableMapEvent, names []string, row []any) strin
 		fmt.Fprintf(&b, "%s=%s", names[i], formatValue(meta, i, row[i]))
 	}
 	if !isKey {
-		// Say so rather than presenting a guessed column as an identity: such a
-		// table cannot be replicated idempotently.
 		b.WriteString(" (no primary key)")
 	}
 	return b.String()
@@ -288,40 +247,28 @@ func formatDiff(meta *replication.TableMapEvent, names []string, before, after [
 	return strings.Join(parts, ", ")
 }
 
-// formatValue renders one column, resolving ENUM and SET indexes to their labels.
-// The binlog stores both as integers, so labels appear only when the server sends
-// full column metadata; integers here mean binlog_row_metadata is not FULL.
 func formatValue(meta *replication.TableMapEvent, col int, v any) string {
 	if v == nil {
 		return "NULL"
 	}
-
 	if meta.IsEnumColumn(col) {
 		if s, ok := enumLabel(meta.EnumStrValueMap()[col], v); ok {
 			return s
 		}
 	}
-
 	if meta.IsSetColumn(col) {
 		if s, ok := setLabels(meta.SetStrValueMap()[col], v); ok {
 			return s
 		}
 	}
-
 	return formatScalar(v)
 }
 
-// formatScalar renders a value that needs no column metadata to interpret.
-// DECIMAL prints exactly rather than through a float, and unsigned integers print
-// as themselves rather than wrapping negative.
 func formatScalar(v any) string {
 	switch x := v.(type) {
 	case nil:
 		return "NULL"
 	case decimal.Decimal:
-		// String() trims trailing zeros, turning DECIMAL(18,2) 19.90 into "19.9".
-		// The column's scale is part of the value: as a keyword in a search index
-		// the two are different terms, so print at the scale the server sent.
 		places := -x.Exponent()
 		if places < 0 {
 			places = 0
@@ -333,10 +280,6 @@ func formatScalar(v any) string {
 		}
 		return "0x" + hex.EncodeToString(x)
 	case string:
-		// Column bytes arrive as the server stored them, so a non-UTF-8 collation
-		// such as latin1 yields bytes that are not valid UTF-8. Print them as hex
-		// rather than emitting mojibake: converting them needs the column's
-		// charset, which the row event alone does not carry.
 		if utf8.ValidString(x) {
 			return x
 		}
@@ -348,9 +291,6 @@ func formatScalar(v any) string {
 	}
 }
 
-// enumLabel resolves an ENUM's stored value to its label. MySQL numbers ENUM
-// members from 1, and reserves 0 for a value that failed validation, so the
-// off-by-one here is part of the format rather than an oversight.
 func enumLabel(labels []string, v any) (string, bool) {
 	if len(labels) == 0 {
 		return "", false
@@ -361,7 +301,7 @@ func enumLabel(labels []string, v any) (string, bool) {
 	}
 	switch {
 	case idx == 0:
-		return "''", true // MySQL's marker for an invalid ENUM value
+		return "''", true
 	case idx >= 1 && int(idx) <= len(labels):
 		return labels[idx-1], true
 	default:
@@ -369,8 +309,6 @@ func enumLabel(labels []string, v any) (string, bool) {
 	}
 }
 
-// setLabels expands a SET's bitmask into its member labels. Bit i corresponds to
-// the i-th member in declaration order.
 func setLabels(labels []string, v any) (string, bool) {
 	if len(labels) == 0 {
 		return "", false

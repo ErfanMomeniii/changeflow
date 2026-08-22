@@ -22,13 +22,10 @@ type Limits struct {
 // Arrival order is kept, which is what preserves the sequence of writes to a single key.
 // Not safe for concurrent use: each pipeline owns one, driven by one goroutine.
 type Batcher struct {
-	limits Limits
-	now    func() time.Time
-
-	pending []cdc.Doc
-	bytes   uint64
-	// startedAt is when the batch took its first document, so the interval bounds how
-	// long that document waits rather than restarting on every arrival.
+	limits    Limits
+	now       func() time.Time
+	pending   []cdc.Doc
+	bytes     uint64
 	startedAt time.Time
 }
 
@@ -53,25 +50,17 @@ func NewBatcher(limits Limits, now func() time.Time) (*Batcher, error) {
 // A returned batch belongs to the caller; the next one fills a fresh slice.
 func (b *Batcher) Add(d cdc.Doc) []cdc.Doc {
 	size := uint64(d.Size())
-
-	// A document larger than the whole budget still has to be delivered, or the stream
-	// stalls forever: send what is pending, then let it through alone.
 	if size >= b.limits.MaxBytes && len(b.pending) > 0 {
 		flushed := b.Flush()
 		b.append(d, size)
 		return append(flushed, b.Flush()...)
 	}
-
-	// Flush before adding, so a batch stays inside its budget rather than overshooting by
-	// one document.
 	if len(b.pending) > 0 && b.bytes+size > b.limits.MaxBytes {
 		flushed := b.Flush()
 		b.append(d, size)
 		return flushed
 	}
-
 	b.append(d, size)
-
 	if len(b.pending) >= b.limits.MaxRows || b.bytes >= b.limits.MaxBytes {
 		return b.Flush()
 	}

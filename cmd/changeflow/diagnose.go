@@ -17,8 +17,6 @@ import (
 	"github.com/ErfanMomeniii/changeflow/internal/tail"
 )
 
-// sourceFlags are the flags the diagnostics share: they talk to a server directly rather
-// than through a configuration file.
 type sourceFlags struct {
 	dsn      string
 	serverID uint32
@@ -38,7 +36,6 @@ func (s *sourceFlags) require() error {
 
 func newPreflightCmd() *cobra.Command {
 	var sf sourceFlags
-
 	cmd := &cobra.Command{
 		Use:   "preflight",
 		Short: "Check whether a MySQL server is configured for CDC",
@@ -50,7 +47,6 @@ func newPreflightCmd() *cobra.Command {
 			return checkServer(cmd.Context(), sf.dsn)
 		},
 	}
-
 	sf.bind(cmd)
 	return cmd
 }
@@ -61,7 +57,6 @@ func checkServer(ctx context.Context, dsn string) error {
 		return err
 	}
 	defer db.Close()
-
 	report, err := preflight.Run(ctx, preflight.DBReader{DB: db})
 	if err != nil {
 		return err
@@ -73,7 +68,6 @@ func checkServer(ctx context.Context, dsn string) error {
 	return nil
 }
 
-// tailRequest is what tailing needs beyond the connection itself.
 type tailRequest struct {
 	source     sourceFlags
 	tables     []string
@@ -84,7 +78,6 @@ type tailRequest struct {
 
 func newTailCmd() *cobra.Command {
 	var req tailRequest
-
 	cmd := &cobra.Command{
 		Use:   "tail",
 		Short: "Register as a replica and print decoded row changes",
@@ -96,7 +89,6 @@ func newTailCmd() *cobra.Command {
 			return tailChanges(cmd.Context(), req)
 		},
 	}
-
 	req.source.bind(cmd)
 	cmd.Flags().StringArrayVar(&req.tables, "table", nil, "db.table to watch; repeatable, default all tables")
 	cmd.Flags().StringVar(&req.captureDir, "capture", "", "directory to write raw event fixtures into")
@@ -110,8 +102,6 @@ func tailChanges(ctx context.Context, req tailRequest) error {
 	if err != nil {
 		return fmt.Errorf("parse dsn: %w", err)
 	}
-	// Replication runs over its own TCP connection rather than through the SQL
-	// driver, so a unix socket DSN cannot be used for it.
 	if cfg.Net != "tcp" {
 		return fmt.Errorf("replication needs a tcp dsn, got %q; use user:pass@tcp(host:3306)/", cfg.Net)
 	}
@@ -119,13 +109,11 @@ func tailChanges(ctx context.Context, req tailRequest) error {
 	if err != nil {
 		return err
 	}
-
 	db, err := open(ctx, req.source.dsn)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-
 	if err := gateOnPreflight(ctx, db, req.source.serverID, req.skipCheck); err != nil {
 		return err
 	}
@@ -133,7 +121,6 @@ func tailChanges(ctx context.Context, req tailRequest) error {
 	if err != nil {
 		return err
 	}
-
 	return tail.Tail(ctx, tail.Config{
 		Host:       host,
 		Port:       port,
@@ -148,7 +135,6 @@ func tailChanges(ctx context.Context, req tailRequest) error {
 	})
 }
 
-// gateOnPreflight prints the source's checks and decides whether streaming may proceed.
 func gateOnPreflight(ctx context.Context, db *sql.DB, serverID uint32, skipCheck bool) error {
 	report, err := preflight.Run(ctx, preflight.DBReader{DB: db})
 	if err != nil {
@@ -158,25 +144,17 @@ func gateOnPreflight(ctx context.Context, db *sql.DB, serverID uint32, skipCheck
 	if !report.OK() && !skipCheck {
 		return fmt.Errorf("%d required check(s) failed; fix the server or pass --skip-preflight to stream anyway", len(report.Failures()))
 	}
-
-	// A replica claiming the source's own id is rejected by the server, and the
-	// resulting error names neither side, so catch it here.
 	if sourceID, ok := report.Get("server_id"); ok && sourceID == strconv.FormatUint(uint64(serverID), 10) {
 		return fmt.Errorf("--server-id %d is the source's own server_id; pick a different one", serverID)
 	}
 	return nil
 }
 
-// currentPosition reads where streaming is to start from.
-//
-// Rows written before now produce no further binlog events, so they are invisible here;
-// reading existing rows requires a table scan rather than the binlog.
 func currentPosition(ctx context.Context, db *sql.DB) (string, error) {
 	var gtid string
 	if err := db.QueryRowContext(ctx, "SELECT @@GLOBAL.gtid_executed").Scan(&gtid); err != nil {
 		return "", fmt.Errorf("read gtid_executed: %w", err)
 	}
-	// A multi-server GTID set is returned across several lines.
 	gtid = strings.ReplaceAll(gtid, "\n", "")
 	if strings.TrimSpace(gtid) == "" {
 		return "", errors.New("gtid_executed is empty: the server has logged no transactions yet, so there is no position to stream from; write a row first")

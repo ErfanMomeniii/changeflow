@@ -35,7 +35,6 @@ func TestMapIntegerTypes(t *testing.T) {
 		wantES     string
 		wantCH     string
 	}{
-		// A tinyint(1) is the conventional boolean.
 		{"tinyint", "tinyint(1)", KindBool, "boolean", "Bool"},
 		{"tinyint", "tinyint(4)", KindInt, "byte", "Int8"},
 		{"tinyint", "tinyint unsigned", KindUint, "short", "UInt8"},
@@ -45,8 +44,6 @@ func TestMapIntegerTypes(t *testing.T) {
 		{"int", "int", KindInt, "integer", "Int32"},
 		{"int", "int unsigned", KindUint, "long", "UInt32"},
 		{"bigint", "bigint", KindInt, "long", "Int64"},
-		// The important one: an Elasticsearch long is signed, so values above 2^63
-		// would wrap silently without unsigned_long.
 		{"bigint", "bigint unsigned", KindUint, "unsigned_long", "UInt64"},
 	} {
 		t.Run(tc.columnType, func(t *testing.T) {
@@ -102,7 +99,6 @@ func TestMapDistinguishesDatetimeFromTimestamp(t *testing.T) {
 	dt.DateTimePrecision = 3
 	ts := col("updated_at", "timestamp", "timestamp(3)")
 	ts.DateTimePrecision = 3
-
 	gotDT, err := Map(dt)
 	if err != nil {
 		t.Fatalf("datetime: %v", err)
@@ -111,7 +107,6 @@ func TestMapDistinguishesDatetimeFromTimestamp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("timestamp: %v", err)
 	}
-
 	if gotDT.Kind == gotTS.Kind {
 		t.Errorf("datetime and timestamp must map to different kinds, both were %v", gotDT.Kind)
 	}
@@ -128,7 +123,6 @@ func TestMapDateUsesDate32ToCoverPre1970(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// ClickHouse Date starts at 1970; Date32 does not, and birthdays exist.
 	if got.ClickHouse != "Date32" {
 		t.Fatalf("clickhouse = %q, want Date32", got.ClickHouse)
 	}
@@ -139,7 +133,6 @@ func TestMapEnumAndSet(t *testing.T) {
 	enum.EnumValues = []string{"draft", "paid", "shipped"}
 	set := col("channels", "set", "set('web','ios')")
 	set.SetValues = []string{"web", "ios"}
-
 	gotEnum, err := Map(enum)
 	if err != nil {
 		t.Fatalf("enum: %v", err)
@@ -150,7 +143,6 @@ func TestMapEnumAndSet(t *testing.T) {
 	if gotEnum.ClickHouse != "LowCardinality(String)" {
 		t.Errorf("enum clickhouse = %q, want LowCardinality(String)", gotEnum.ClickHouse)
 	}
-
 	gotSet, err := Map(set)
 	if err != nil {
 		t.Fatalf("set: %v", err)
@@ -235,7 +227,6 @@ func TestNullableColumnsWrapClickHouseType(t *testing.T) {
 	if got.ClickHouse != "Nullable(String)" {
 		t.Fatalf("clickhouse = %q, want Nullable(String)", got.ClickHouse)
 	}
-
 	notNull, err := Map(col("note", "varchar", "varchar(64)"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -250,7 +241,6 @@ func TestNullableColumnsWrapClickHouseType(t *testing.T) {
 func TestNullableEnumNesting(t *testing.T) {
 	enum := col("status", "enum", "enum('a','b')", nullable)
 	enum.EnumValues = []string{"a", "b"}
-
 	got, err := Map(enum)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

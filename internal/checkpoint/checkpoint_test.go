@@ -8,7 +8,6 @@ import (
 func TestLagAtReportsDistanceBehindSource(t *testing.T) {
 	now := time.UnixMilli(testClockMs)
 	cp := Checkpoint{LastEventTsMs: testClockMs - 2_500}
-
 	lag, ok := cp.LagAt(now)
 	if !ok {
 		t.Fatal("expected lag to be available")
@@ -30,7 +29,6 @@ func TestLagAtReportsUnavailableBeforeAnyEvent(t *testing.T) {
 func TestLagAtClampsFutureTimestamps(t *testing.T) {
 	now := time.UnixMilli(testClockMs)
 	cp := Checkpoint{LastEventTsMs: testClockMs + 5_000}
-
 	lag, ok := cp.LagAt(now)
 	if !ok {
 		t.Fatal("expected lag to be available")
@@ -45,13 +43,11 @@ func TestLagAtClampsFutureTimestamps(t *testing.T) {
 func TestMemoryStoreDoesNotShareCursorMemory(t *testing.T) {
 	store := NewMemoryStore()
 	mustSave(t, store, Checkpoint{Stream: "s", SnapshotCursor: []byte("key-1")})
-
 	loaded, err := store.Load(t.Context(), "s")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
 	loaded.SnapshotCursor[0] = 'X'
-
 	again, err := store.Load(t.Context(), "s")
 	if err != nil {
 		t.Fatalf("load: %v", err)

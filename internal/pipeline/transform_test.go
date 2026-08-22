@@ -12,7 +12,6 @@ import (
 	"github.com/ErfanMomeniii/changeflow/internal/schema"
 )
 
-// ordersMeta mirrors the development schema, including the awkward columns.
 func ordersMeta(t *testing.T) *schema.TableMeta {
 	t.Helper()
 	m := &schema.TableMeta{
@@ -40,27 +39,25 @@ func ordersMeta(t *testing.T) *schema.TableMeta {
 		},
 		PrimaryKey: []string{"id"},
 	}
-	// Exercise the same path a loaded definition takes.
 	if _, ok := m.Column("id"); !ok {
 		t.Fatal("meta not indexed")
 	}
 	return m
 }
 
-// fullRow returns a row in ordinal order for the table above.
 func fullRow() cdc.Row {
 	return cdc.Row{
-		uint64(42),                             // id
-		uint64(7),                              // user_id
-		int64(2),                               // status: paid, stored as a member number
-		int64(0b0011),                          // channels: web,ios as a bitmask
-		decimal.RequireFromString("19.90"),     // total_amount
-		int64(1),                               // is_gift
-		string([]byte{0x63, 0x61, 0x66, 0xE9}), // note_latin1: "café" in latin1
-		[]byte(`{"coupon":"WELCOME"}`),         // metadata
-		"2026-08-11 10:00:00.000",              // placed_at, wall clock
-		"2026-08-11 11:00:00.000",              // updated_at, already UTC
-		decimal.RequireFromString("21.69"),     // total_with_tax, generated
+		uint64(42),
+		uint64(7),
+		int64(2),
+		int64(0b0011),
+		decimal.RequireFromString("19.90"),
+		int64(1),
+		string([]byte{0x63, 0x61, 0x66, 0xE9}),
+		[]byte(`{"coupon":"WELCOME"}`),
+		"2026-08-11 10:00:00.000",
+		"2026-08-11 11:00:00.000",
+		decimal.RequireFromString("21.69"),
 	}
 }
 
@@ -97,9 +94,7 @@ func body(t *testing.T, d cdc.Doc) string {
 func TestInsertProducesOneUpsert(t *testing.T) {
 	m := ordersMeta(t)
 	p := newPlan(t, m, config.Mapping{Key: []string{"id"}}, DialectElasticsearch)
-
 	doc := applyOne(t, p, insertEvent(m))
-
 	if doc.Key != "42" {
 		t.Errorf("key = %q, want 42", doc.Key)
 	}
@@ -115,7 +110,6 @@ func TestInsertProducesOneUpsert(t *testing.T) {
 func TestGeneratedColumnIsNotWritten(t *testing.T) {
 	m := ordersMeta(t)
 	p := newPlan(t, m, config.Mapping{Key: []string{"id"}}, DialectElasticsearch)
-
 	if got := body(t, applyOne(t, p, insertEvent(m))); strings.Contains(got, "total_with_tax") {
 		t.Fatalf("generated column present in body: %s", got)
 	}
@@ -128,9 +122,7 @@ func TestRenameAndIncludeAreApplied(t *testing.T) {
 		Include: []string{"id", "status", "total_amount"},
 		Rename:  map[string]string{"total_amount": "total"},
 	}, DialectElasticsearch)
-
 	got := body(t, applyOne(t, p, insertEvent(m)))
-
 	if !strings.Contains(got, `"total":`) {
 		t.Errorf("renamed field missing: %s", got)
 	}
@@ -147,11 +139,9 @@ func TestRenameAndIncludeAreApplied(t *testing.T) {
 func TestLargeUnsignedIntegerIsExact(t *testing.T) {
 	m := ordersMeta(t)
 	p := newPlan(t, m, config.Mapping{Key: []string{"id"}, Include: []string{"id"}}, DialectElasticsearch)
-
 	row := fullRow()
 	row[0] = uint64(18446744073709551001)
 	doc := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Operation: cdc.OperationInsert, After: row, Seq: 1})
-
 	if !strings.Contains(body(t, doc), "18446744073709551001") {
 		t.Fatalf("value lost precision: %s", body(t, doc))
 	}
@@ -165,7 +155,6 @@ func TestLargeUnsignedIntegerIsExact(t *testing.T) {
 func TestDecimalIsQuotedForElasticsearch(t *testing.T) {
 	m := ordersMeta(t)
 	p := newPlan(t, m, config.Mapping{Key: []string{"id"}, Include: []string{"id", "total_amount"}}, DialectElasticsearch)
-
 	if got := body(t, applyOne(t, p, insertEvent(m))); !strings.Contains(got, `"total_amount":"19.90"`) {
 		t.Fatalf("expected a quoted exact decimal, got: %s", got)
 	}
@@ -175,7 +164,6 @@ func TestDecimalIsQuotedForElasticsearch(t *testing.T) {
 func TestDecimalIsUnquotedForClickHouse(t *testing.T) {
 	m := ordersMeta(t)
 	p := newPlan(t, m, config.Mapping{Key: []string{"id"}, Include: []string{"id", "total_amount"}}, DialectClickHouse)
-
 	if got := body(t, applyOne(t, p, insertEvent(m))); !strings.Contains(got, `"total_amount":19.90`) {
 		t.Fatalf("expected an unquoted exact decimal, got: %s", got)
 	}
@@ -186,7 +174,6 @@ func TestDecimalIsUnquotedForClickHouse(t *testing.T) {
 func TestEnumIsWrittenAsItsLabel(t *testing.T) {
 	m := ordersMeta(t)
 	p := newPlan(t, m, config.Mapping{Key: []string{"id"}, Include: []string{"id", "status"}}, DialectElasticsearch)
-
 	if got := body(t, applyOne(t, p, insertEvent(m))); !strings.Contains(got, `"status":"paid"`) {
 		t.Fatalf("expected the label, got: %s", got)
 	}
@@ -197,7 +184,6 @@ func TestEnumIsWrittenAsItsLabel(t *testing.T) {
 func TestSetIsWrittenAsAnArrayOfLabels(t *testing.T) {
 	m := ordersMeta(t)
 	p := newPlan(t, m, config.Mapping{Key: []string{"id"}, Include: []string{"id", "channels"}}, DialectElasticsearch)
-
 	if got := body(t, applyOne(t, p, insertEvent(m))); !strings.Contains(got, `"channels":["web","ios"]`) {
 		t.Fatalf("expected an array of labels, got: %s", got)
 	}
@@ -206,11 +192,9 @@ func TestSetIsWrittenAsAnArrayOfLabels(t *testing.T) {
 func TestEmptySetIsAnEmptyArray(t *testing.T) {
 	m := ordersMeta(t)
 	p := newPlan(t, m, config.Mapping{Key: []string{"id"}, Include: []string{"id", "channels"}}, DialectElasticsearch)
-
 	row := fullRow()
 	row[3] = int64(0)
 	doc := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Operation: cdc.OperationInsert, After: row, Seq: 1})
-
 	if got := body(t, doc); !strings.Contains(got, `"channels":[]`) {
 		t.Fatalf("expected an empty array, got: %s", got)
 	}
@@ -221,9 +205,7 @@ func TestEmptySetIsAnEmptyArray(t *testing.T) {
 func TestLatin1ColumnIsConvertedToUTF8(t *testing.T) {
 	m := ordersMeta(t)
 	p := newPlan(t, m, config.Mapping{Key: []string{"id"}, Include: []string{"id", "note_latin1"}}, DialectElasticsearch)
-
 	got := body(t, applyOne(t, p, insertEvent(m)))
-
 	if !strings.Contains(got, `"note_latin1":"café"`) {
 		t.Fatalf("expected latin1 to be converted to UTF-8, got: %s", got)
 	}
@@ -232,7 +214,6 @@ func TestLatin1ColumnIsConvertedToUTF8(t *testing.T) {
 func TestTinyIntOneBecomesBoolean(t *testing.T) {
 	m := ordersMeta(t)
 	p := newPlan(t, m, config.Mapping{Key: []string{"id"}, Include: []string{"id", "is_gift"}}, DialectElasticsearch)
-
 	if got := body(t, applyOne(t, p, insertEvent(m))); !strings.Contains(got, `"is_gift":true`) {
 		t.Fatalf("expected a boolean, got: %s", got)
 	}
@@ -243,7 +224,6 @@ func TestTinyIntOneBecomesBoolean(t *testing.T) {
 func TestJSONIsPassedThroughVerbatim(t *testing.T) {
 	m := ordersMeta(t)
 	p := newPlan(t, m, config.Mapping{Key: []string{"id"}, Include: []string{"id", "metadata"}}, DialectElasticsearch)
-
 	if got := body(t, applyOne(t, p, insertEvent(m))); !strings.Contains(got, `"metadata":{"coupon":"WELCOME"}`) {
 		t.Fatalf("expected the JSON document unchanged, got: %s", got)
 	}
@@ -252,11 +232,9 @@ func TestJSONIsPassedThroughVerbatim(t *testing.T) {
 func TestNullIsWrittenAsNull(t *testing.T) {
 	m := ordersMeta(t)
 	p := newPlan(t, m, config.Mapping{Key: []string{"id"}, Include: []string{"id", "note_latin1"}}, DialectElasticsearch)
-
 	row := fullRow()
 	row[6] = nil
 	doc := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Operation: cdc.OperationInsert, After: row, Seq: 1})
-
 	if got := body(t, doc); !strings.Contains(got, `"note_latin1":null`) {
 		t.Fatalf("expected null, got: %s", got)
 	}
@@ -275,10 +253,7 @@ func TestDatetimeIsInterpretedInSourceZone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-
 	got := body(t, applyOne(t, p, insertEvent(m)))
-
-	// 10:00 in Tehran is 06:30 UTC.
 	if !strings.Contains(got, `"placed_at":"2026-08-11T06:30:00Z"`) {
 		t.Fatalf("expected the wall clock to be converted from the source zone, got: %s", got)
 	}
@@ -296,9 +271,7 @@ func TestTimestampIsNotShifted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-
 	got := body(t, applyOne(t, p, insertEvent(m)))
-
 	if !strings.Contains(got, `"updated_at":"2026-08-11T11:00:00Z"`) {
 		t.Fatalf("a TIMESTAMP is already UTC and must not be converted, got: %s", got)
 	}
@@ -306,7 +279,6 @@ func TestTimestampIsNotShifted(t *testing.T) {
 
 func TestZeroDatePolicies(t *testing.T) {
 	m := ordersMeta(t)
-
 	for _, tc := range []struct {
 		policy   string
 		wantBody string
@@ -322,11 +294,9 @@ func TestZeroDatePolicies(t *testing.T) {
 			if err != nil {
 				t.Fatalf("compile: %v", err)
 			}
-
 			row := fullRow()
 			row[8] = "0000-00-00 00:00:00.000"
 			docs, err := p.Apply(&cdc.ChangeEvent{Meta: m, Operation: cdc.OperationInsert, After: row, Seq: 1})
-
 			if tc.wantErr {
 				if err == nil {
 					t.Fatal("expected an error for a zero date")
@@ -346,9 +316,7 @@ func TestZeroDatePolicies(t *testing.T) {
 func TestDeleteProducesATombstoneKeyedFromBefore(t *testing.T) {
 	m := ordersMeta(t)
 	p := newPlan(t, m, config.Mapping{Key: []string{"id"}}, DialectElasticsearch)
-
 	doc := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Operation: cdc.OperationDelete, Before: fullRow(), Seq: 2000})
-
 	if !doc.Deleted {
 		t.Error("expected the document to be marked deleted")
 	}
@@ -365,15 +333,12 @@ func TestDeleteProducesATombstoneKeyedFromBefore(t *testing.T) {
 func TestKeyChangingUpdateProducesDeleteThenUpsert(t *testing.T) {
 	m := ordersMeta(t)
 	p := newPlan(t, m, config.Mapping{Key: []string{"id"}}, DialectElasticsearch)
-
 	before, after := fullRow(), fullRow()
 	after[0] = uint64(43)
-
 	docs, err := p.Apply(&cdc.ChangeEvent{Meta: m, Operation: cdc.OperationUpdate, Before: before, After: after, Seq: 5000})
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-
 	if len(docs) != 2 {
 		t.Fatalf("expected 2 documents, got %d", len(docs))
 	}
@@ -383,10 +348,6 @@ func TestKeyChangingUpdateProducesDeleteThenUpsert(t *testing.T) {
 	if docs[1].Deleted || docs[1].Key != "43" {
 		t.Errorf("second document should write the new key, got key=%q deleted=%v", docs[1].Key, docs[1].Deleted)
 	}
-	// Both carry the event's version. They address different keys, so no ordering
-	// between them is needed, and giving the second Seq+1 would risk colliding
-	// with the version of the next event for that same new key, which the
-	// destination would then reject as not newer.
 	if docs[0].Version != 5000 || docs[1].Version != 5000 {
 		t.Errorf("both documents should carry the event version: delete=%d upsert=%d", docs[0].Version, docs[1].Version)
 	}
@@ -395,10 +356,8 @@ func TestKeyChangingUpdateProducesDeleteThenUpsert(t *testing.T) {
 func TestUpdateWithoutKeyChangeProducesOneUpsert(t *testing.T) {
 	m := ordersMeta(t)
 	p := newPlan(t, m, config.Mapping{Key: []string{"id"}}, DialectElasticsearch)
-
 	before, after := fullRow(), fullRow()
-	after[2] = int64(3) // status becomes shipped
-
+	after[2] = int64(3)
 	docs, err := p.Apply(&cdc.ChangeEvent{Meta: m, Operation: cdc.OperationUpdate, Before: before, After: after, Seq: 7000})
 	if err != nil {
 		t.Fatalf("apply: %v", err)
@@ -416,9 +375,7 @@ func TestUpdateWithoutKeyChangeProducesOneUpsert(t *testing.T) {
 func TestSnapshotRowIsAnUpsert(t *testing.T) {
 	m := ordersMeta(t)
 	p := newPlan(t, m, config.Mapping{Key: []string{"id"}}, DialectElasticsearch)
-
 	doc := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Operation: cdc.OperationSnapshot, After: fullRow(), Seq: 10})
-
 	if doc.Deleted || doc.Key != "42" {
 		t.Fatalf("expected an upsert keyed 42, got %+v", doc)
 	}
@@ -434,9 +391,7 @@ func TestCompositeKeyIsJoined(t *testing.T) {
 		PrimaryKey: []string{"order_id", "sku"},
 	}
 	p := newPlan(t, m, config.Mapping{Key: []string{"order_id", "sku"}}, DialectElasticsearch)
-
 	doc := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Operation: cdc.OperationInsert, After: cdc.Row{uint64(100), "SKU-1"}, Seq: 1})
-
 	if doc.Key != "100:SKU-1" {
 		t.Fatalf("key = %q, want 100:SKU-1", doc.Key)
 	}
@@ -453,10 +408,8 @@ func TestCompositeKeyEscapesSeparatorInValues(t *testing.T) {
 		PrimaryKey: []string{"order_id", "sku"},
 	}
 	p := newPlan(t, m, config.Mapping{Key: []string{"order_id", "sku"}}, DialectElasticsearch)
-
 	first := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Operation: cdc.OperationInsert, After: cdc.Row{uint64(100), "SKU:99"}, Seq: 1})
 	second := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Operation: cdc.OperationInsert, After: cdc.Row{uint64(100), "SKU"}, Seq: 2})
-
 	if first.Key == second.Key {
 		t.Fatalf("distinct keys collided: both produced %q", first.Key)
 	}
@@ -476,11 +429,9 @@ func TestOverlongKeyIsHashed(t *testing.T) {
 		PrimaryKey: []string{"k"},
 	}
 	p := newPlan(t, m, config.Mapping{Key: []string{"k"}}, DialectElasticsearch)
-
 	long := strings.Repeat("x", 600)
 	first := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Operation: cdc.OperationInsert, After: cdc.Row{long}, Seq: 1})
 	again := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Operation: cdc.OperationInsert, After: cdc.Row{long}, Seq: 2})
-
 	if len(first.Key) > 512 {
 		t.Fatalf("key is %d bytes, which Elasticsearch would reject", len(first.Key))
 	}
@@ -498,10 +449,8 @@ func TestOverlongKeyIsHashed(t *testing.T) {
 func TestNullKeyIsRefused(t *testing.T) {
 	m := ordersMeta(t)
 	p := newPlan(t, m, config.Mapping{Key: []string{"id"}}, DialectElasticsearch)
-
 	row := fullRow()
 	row[0] = nil
-
 	if _, err := p.Apply(&cdc.ChangeEvent{Meta: m, Operation: cdc.OperationInsert, After: row, Seq: 1}); err == nil {
 		t.Fatal("expected a null key to be refused")
 	}
@@ -510,9 +459,7 @@ func TestNullKeyIsRefused(t *testing.T) {
 func TestApplyRejectsRowOfWrongWidth(t *testing.T) {
 	m := ordersMeta(t)
 	p := newPlan(t, m, config.Mapping{Key: []string{"id"}}, DialectElasticsearch)
-
 	short := cdc.Row{uint64(42), uint64(7)}
-
 	if _, err := p.Apply(&cdc.ChangeEvent{Meta: m, Operation: cdc.OperationInsert, After: short, Seq: 1}); err == nil {
 		t.Fatal("expected a row with fewer values than columns to be refused")
 	}
@@ -527,7 +474,6 @@ func TestUnsupportedCharsetIsRefusedAtCompileTime(t *testing.T) {
 			m.Columns[i].CharacterSet = "gbk"
 		}
 	}
-
 	_, err := Compile(m, config.Mapping{Key: []string{"id"}, Include: []string{"id", "note_latin1"}},
 		DialectElasticsearch, time.UTC, "null")
 	if err == nil {
@@ -543,7 +489,6 @@ func TestCompileRejectsUnsupportedColumnType(t *testing.T) {
 	m.Columns = append(m.Columns, schema.Column{
 		Name: "shape", Position: 11, DataType: "geometry", ColumnType: "geometry",
 	})
-
 	if _, err := Compile(m, config.Mapping{Key: []string{"id"}}, DialectElasticsearch, time.UTC, "null"); err == nil {
 		t.Fatal("expected a spatial column to be refused when the plan is compiled")
 	}
@@ -554,14 +499,11 @@ func TestCompileRejectsUnsupportedColumnType(t *testing.T) {
 func TestPlanIsReusableAcrossEvents(t *testing.T) {
 	m := ordersMeta(t)
 	p := newPlan(t, m, config.Mapping{Key: []string{"id"}, Include: []string{"id", "status"}}, DialectElasticsearch)
-
 	first := applyOne(t, p, insertEvent(m))
-
 	row := fullRow()
 	row[0] = uint64(99)
 	row[2] = int64(1)
 	second := applyOne(t, p, &cdc.ChangeEvent{Meta: m, Operation: cdc.OperationInsert, After: row, Seq: 2})
-
 	if strings.Contains(string(second.Body), `"paid"`) {
 		t.Fatalf("second document contains the first's value: %s", second.Body)
 	}

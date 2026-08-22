@@ -1,10 +1,3 @@
-// Package preflight validates that a MySQL server is configured for change data
-// capture before changeflow attempts to replicate from it.
-//
-// Every check exists because getting it wrong produces either an immediate
-// failure or, worse, silently incorrect data. The checks are split into two
-// severities: Required failures mean changeflow refuses to start, Advisory
-// failures are reported and logged but do not block.
 package preflight
 
 import (
@@ -39,9 +32,7 @@ type Check struct {
 	Got      string
 	OK       bool
 	Severity Severity
-	// Why explains the consequence of this check failing. An operator reading a
-	// failure at 3am needs the reason, not just the setting name.
-	Why string
+	Why      string
 }
 
 // Report is the outcome of a full preflight run.
@@ -110,9 +101,6 @@ func Evaluate(vars map[string]string, grants []string) Report {
 		v, ok := vars[strings.ToLower(name)]
 		return v, ok
 	}
-
-	// equals builds a check that a variable holds an expected value,
-	// case-insensitively, treating an absent variable as unsupported.
 	equals := func(name, want string, sev Severity, why string) Check {
 		got, ok := get(name)
 		if !ok {
@@ -127,31 +115,22 @@ func Evaluate(vars map[string]string, grants []string) Report {
 			Why:      why,
 		}
 	}
-
 	r := Report{}
-
 	r.Checks = append(r.Checks, serverCheck(get))
-
 	r.Checks = append(r.Checks,
 		equals("log_bin", "ON", Required,
 			"Without a binary log there is nothing to replicate from."),
-
 		equals("binlog_format", "ROW", Required,
 			"STATEMENT and MIXED log SQL text rather than row images, so there are no before/after values to apply to a sink."),
-
 		equals("binlog_row_image", "FULL", Required,
 			"MINIMAL and NOBLOB omit unchanged columns, so an UPDATE would silently drop fields from the sink document, and a DELETE may not carry the key."),
-
 		equals("binlog_row_metadata", "FULL", Required,
 			"Carries column names, signedness, and ENUM/SET labels in the binlog. Without it unsigned columns arrive negative and ENUMs arrive as integers - corruption that is invisible until someone compares values. Requires MySQL 8.0.1 or newer."),
-
 		equals("gtid_mode", "ON", Required,
 			"GTID positions survive binlog rotation and master failover; file+position does not."),
-
 		equals("enforce_gtid_consistency", "ON", Advisory,
 			"Without it, statements unsafe for GTID replication are allowed, which can produce a GTID set we cannot reason about."),
 	)
-
 	r.Checks = append(r.Checks, partialJSONCheck(get))
 	r.Checks = append(r.Checks, serverIDCheck(get))
 	r.Checks = append(r.Checks, retentionCheck(get))
@@ -159,30 +138,20 @@ func Evaluate(vars map[string]string, grants []string) Report {
 		equals("log_replica_updates", "ON", Advisory,
 			"Only matters when pointing changeflow at a read replica: without it the replica's own binlog omits writes replicated from its master, so we would miss them."),
 	)
-
 	for _, priv := range []string{"REPLICATION SLAVE", "REPLICATION CLIENT", "SELECT"} {
 		r.Checks = append(r.Checks, grantCheck(priv, grants))
 	}
-
 	return r
 }
 
-// partialJSONCheck rejects a server that logs JSON updates as diffs.
-//
-// Applying a diff needs the previous document, which a sink does not give back, so the
-// column would silently hold a description of a change instead of a document. A server
-// without the variable cannot be logging diffs, so its absence passes.
 func partialJSONCheck(get func(string) (string, bool)) Check {
 	const why = "PARTIAL_JSON logs an UPDATE to a JSON column as a diff rather than the new value, " +
 		"which cannot be applied to a destination that holds only the current document. " +
 		"The result is a column carrying a description of a change instead of a document, with nothing reporting it."
-
 	got, ok := get("binlog_row_value_options")
 	if !ok {
-		// Older servers have no such setting, so there is nothing to be wrong.
 		return Check{Name: "binlog_row_value_options", Want: "empty", Got: "<unsupported>", OK: true, Severity: Required, Why: why}
 	}
-
 	trimmed := strings.TrimSpace(got)
 	shown := trimmed
 	if shown == "" {
@@ -198,20 +167,13 @@ func partialJSONCheck(get func(string) (string, bool)) Check {
 	}
 }
 
-// serverCheck rejects servers whose replication protocol we do not speak.
-// MariaDB reports itself through the same version variable but uses a different
-// GTID format and has no binlog_row_metadata, so it fails here with a clear
-// message rather than as a confusing GTID parse error mid-stream.
 func serverCheck(get func(string) (string, bool)) Check {
 	const minVersion = "8.0.1"
-
 	got, ok := get("version")
 	if !ok {
 		got = "<unknown>"
 	}
-
 	why := "MariaDB uses a different GTID format and does not implement binlog_row_metadata. MySQL below " + minVersion + " has no row metadata either, so column names, signedness, and ENUM labels would be missing."
-
 	switch {
 	case !ok:
 		return Check{Name: "server version", Want: "MySQL >= " + minVersion, Got: got, OK: false, Severity: Required, Why: why}
@@ -222,11 +184,8 @@ func serverCheck(get func(string) (string, bool)) Check {
 	}
 }
 
-// atLeastVersion compares dotted version prefixes numerically, ignoring any
-// suffix such as "-log" or "-0ubuntu0.22.04.1".
 func atLeastVersion(got, min string) bool {
 	parse := func(s string) []int {
-		// Keep only the leading dotted-numeric portion.
 		end := strings.IndexFunc(s, func(r rune) bool {
 			return r != '.' && (r < '0' || r > '9')
 		})
@@ -243,14 +202,13 @@ func atLeastVersion(got, min string) bool {
 		}
 		return out
 	}
-
 	g, m := parse(got), parse(min)
 	if len(g) == 0 {
 		return false
 	}
 	for i := range m {
 		if i >= len(g) {
-			return false // fewer components than required, e.g. "8" vs "8.0.1"
+			return false
 		}
 		if g[i] != m[i] {
 			return g[i] > m[i]
@@ -275,25 +233,18 @@ func serverIDCheck(get func(string) (string, bool)) Check {
 	}
 }
 
-// retentionCheck warns when binlogs expire sooner than a day. Retention must
-// exceed both the longest expected outage and the longest snapshot, because the
-// binlog is not consumed while a snapshot runs.
 func retentionCheck(get func(string) (string, bool)) Check {
 	const minSeconds = 24 * 60 * 60
-
 	why := "The binlog is not consumed for a stream while its snapshot runs, so retention shorter than a snapshot purges our start position before streaming begins - a loop that never converges. It also bounds how long changeflow can be down."
-
 	got, ok := get("binlog_expire_logs_seconds")
 	if !ok {
 		return Check{Name: "binlog retention", Want: ">= 24h", Got: "<unknown>", OK: false, Severity: Advisory, Why: why}
 	}
-
 	secs, err := strconv.ParseUint(strings.TrimSpace(got), 10, 64)
 	display := got + "s"
 	if err == nil && secs == 0 {
 		display = "never expires"
 	}
-
 	return Check{
 		Name:     "binlog retention",
 		Want:     ">= 24h",
@@ -304,10 +255,6 @@ func retentionCheck(get func(string) (string, bool)) Check {
 	}
 }
 
-// grantCheck looks for a privilege in SHOW GRANTS output. ALL PRIVILEGES
-// satisfies everything. The match is textual, so a privilege granted on a
-// database or table scope counts - which is correct for SELECT, and harmless for
-// the replication privileges since MySQL only accepts those globally.
 func grantCheck(priv string, grants []string) Check {
 	found := false
 	for _, line := range grants {
@@ -320,13 +267,11 @@ func grantCheck(priv string, grants []string) Check {
 			break
 		}
 	}
-
 	why := map[string]string{
 		"REPLICATION SLAVE":  "Required to open a binlog dump stream as a replica.",
 		"REPLICATION CLIENT": "Required to read the server's replication position and status.",
 		"SELECT":             "Required to read table schemas and to snapshot existing rows.",
 	}[priv]
-
 	return Check{
 		Name:     "grant:" + priv,
 		Want:     "granted",
@@ -357,16 +302,11 @@ func (r DBReader) GlobalVars(ctx context.Context, names []string) (map[string]st
 	for _, n := range names {
 		want[strings.ToLower(n)] = true
 	}
-
-	// One unfiltered SHOW rather than a query per name: SHOW does not accept
-	// placeholders, and interpolating names into SQL is not worth it when the
-	// whole set is a few hundred rows.
 	rows, err := r.DB.QueryContext(ctx, "SHOW GLOBAL VARIABLES")
 	if err != nil {
 		return nil, fmt.Errorf("read global variables: %w", err)
 	}
 	defer rows.Close()
-
 	out := make(map[string]string, len(names))
 	for rows.Next() {
 		var k, v string
@@ -387,7 +327,6 @@ func (r DBReader) Grants(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("show grants: %w", err)
 	}
 	defer rows.Close()
-
 	var out []string
 	for rows.Next() {
 		var line string

@@ -28,12 +28,10 @@ func NewMemoryStore() *MemoryStore {
 func (s *MemoryStore) Load(_ context.Context, stream string) (Checkpoint, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	cp, ok := s.data[stream]
 	if !ok {
 		return Checkpoint{}, ErrNotFound
 	}
-	// Copy the cursor so a caller cannot mutate stored state through the slice.
 	cp.SnapshotCursor = append([]byte(nil), cp.SnapshotCursor...)
 	return cp, nil
 }
@@ -42,7 +40,6 @@ func (s *MemoryStore) Load(_ context.Context, stream string) (Checkpoint, error)
 func (s *MemoryStore) Save(_ context.Context, cp Checkpoint) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	cp.SnapshotCursor = append([]byte(nil), cp.SnapshotCursor...)
 	if s.now != nil {
 		cp.UpdatedAt = s.now()

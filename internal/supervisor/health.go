@@ -1,7 +1,5 @@
 package supervisor
 
-// Health and metrics reporting for running streams.
-
 import (
 	"context"
 	"errors"
@@ -12,8 +10,6 @@ import (
 	"github.com/ErfanMomeniii/changeflow/internal/telemetry"
 )
 
-// streamObserver adapts one stream to what the pipeline reports, and keeps the state
-// readiness is judged on up to date.
 type streamObserver struct {
 	metrics *telemetry.Metrics
 	state   *streamState
@@ -34,19 +30,13 @@ func (o *streamObserver) Write(applied, stale, rejected int, elapsed time.Durati
 
 func (o *streamObserver) DeadLettered(n int) { o.metrics.DeadLettered(n) }
 
-// ready reports whether every stream is fit to serve traffic.
-//
-// A stream that is merely behind is still alive, so this is readiness rather than liveness:
-// restarting a lagging stream would only push it further behind.
 func (s *Supervisor) ready() error {
 	s.mu.Lock()
 	runtimes := s.running
 	s.mu.Unlock()
-
 	if len(runtimes) == 0 {
 		return errors.New("not started yet")
 	}
-
 	for _, rt := range runtimes {
 		streaming, lastEvent, lastErr := rt.state.snapshot()
 		if lastErr != nil && !errors.Is(lastErr, context.Canceled) {
@@ -55,9 +45,6 @@ func (s *Supervisor) ready() error {
 		if !streaming {
 			return fmt.Errorf("stream %s is not streaming yet", rt.cfg.Name)
 		}
-		// A quiet table produces no events, so silence alone cannot mean unhealthy. Only
-		// an event older than the threshold does, which means changes exist and are not
-		// being applied.
 		if !lastEvent.IsZero() {
 			if behind := time.Since(lastEvent); behind > readinessLagLimit {
 				return fmt.Errorf("stream %s last applied a change %s ago", rt.cfg.Name, behind.Round(time.Second))
@@ -67,14 +54,9 @@ func (s *Supervisor) ready() error {
 	return nil
 }
 
-// reportQueueDepth samples how many events are waiting for a stream.
-//
-// Pinned at the buffer size means the destination is setting the pace, which is the
-// difference between a slow source and a slow sink.
 func (s *Supervisor) reportQueueDepth(ctx context.Context, rt *streamRuntime) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
-
 	for {
 		select {
 		case <-ctx.Done():

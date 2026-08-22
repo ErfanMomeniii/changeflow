@@ -12,37 +12,25 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 )
 
-// testStore connects to the MySQL named by CHANGEFLOW_TEST_DSN and returns a
-// store on a table unique to the calling test, dropped afterwards. Tests skip
-// when no DSN is set, so the default suite needs no containers.
 func testStore(t *testing.T) (*MySQLStore, *sql.DB) {
 	t.Helper()
-
-	// A distinct variable from the source database: the checkpoint store lives in
-	// its own schema with its own grants, and these tests create and drop tables in
-	// it. Sharing one variable would point them at a database where that is rightly
-	// forbidden.
 	dsn := os.Getenv("CHANGEFLOW_TEST_META_DSN")
 	if dsn == "" {
 		t.Skip("set CHANGEFLOW_TEST_META_DSN to run checkpoint store tests against MySQL")
 	}
-
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-
 	if err := db.PingContext(t.Context()); err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-
 	table := "cp_test_" + sanitizeForTable(t.Name())
 	store, err := NewMySQLStore(db, table)
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
-	// Contention is the behaviour under test, so do not wait for it to clear.
 	store.LockTimeout = 0
 	if err := store.EnsureSchema(t.Context()); err != nil {
 		t.Fatalf("ensure schema: %v", err)
@@ -50,7 +38,6 @@ func testStore(t *testing.T) (*MySQLStore, *sql.DB) {
 	t.Cleanup(func() {
 		_, _ = db.Exec("DROP TABLE IF EXISTS " + table)
 	})
-
 	return store, db
 }
 
@@ -75,17 +62,14 @@ func TestMySQLStoreReadsTimestampsWithoutParseTime(t *testing.T) {
 	if dsn == "" {
 		t.Skip("set CHANGEFLOW_TEST_META_DSN to run checkpoint store tests against MySQL")
 	}
-	// Strip the parameter if the environment happened to supply it.
 	if i := strings.IndexByte(dsn, '?'); i >= 0 {
 		dsn = dsn[:i]
 	}
-
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	defer db.Close()
-
 	table := "cp_test_" + sanitizeForTable(t.Name())
 	store, err := NewMySQLStore(db, table)
 	if err != nil {
@@ -95,7 +79,6 @@ func TestMySQLStoreReadsTimestampsWithoutParseTime(t *testing.T) {
 		t.Fatalf("ensure schema: %v", err)
 	}
 	t.Cleanup(func() { db.Exec("DROP TABLE IF EXISTS " + table) })
-
 	if err := store.Save(t.Context(), Checkpoint{Stream: "s", GTIDSet: "uuid:1-5"}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -113,9 +96,6 @@ func TestMySQLStoreReadsTimestampsWithoutParseTime(t *testing.T) {
 
 func TestMySQLStoreEnsureSchemaIsRepeatable(t *testing.T) {
 	store, _ := testStore(t)
-
-	// Startup runs this every time, so a second call must be a no-op rather than
-	// an error.
 	if err := store.EnsureSchema(t.Context()); err != nil {
 		t.Fatalf("second ensure schema: %v", err)
 	}
@@ -123,7 +103,6 @@ func TestMySQLStoreEnsureSchemaIsRepeatable(t *testing.T) {
 
 func TestMySQLStoreReportsMissingStream(t *testing.T) {
 	store, _ := testStore(t)
-
 	if _, err := store.Load(t.Context(), "never-seen"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("got %v, want ErrNotFound", err)
 	}
@@ -131,7 +110,6 @@ func TestMySQLStoreReportsMissingStream(t *testing.T) {
 
 func TestMySQLStoreRoundTripsEveryField(t *testing.T) {
 	store, _ := testStore(t)
-
 	want := Checkpoint{
 		Stream:            "orders_to_es",
 		GTIDSet:           "ac8fec9f-9576-11f1-810c-16613dc98230:1-4211",
@@ -141,13 +119,11 @@ func TestMySQLStoreRoundTripsEveryField(t *testing.T) {
 		SnapshotBaseSeq:   1 << 50,
 		SnapshotRowsDone:  340_000,
 		SnapshotRowsTotal: 1_000_000,
-		// Above 2^63 to prove the column is unsigned end to end.
-		SeqWatermark:  18_446_744_073_709_551_000,
-		LastEventTsMs: 1_786_000_000_000,
-		LastError:     "elasticsearch: 429 rejected",
-		SchemaVersion: SchemaVersion,
+		SeqWatermark:      18_446_744_073_709_551_000,
+		LastEventTsMs:     1_786_000_000_000,
+		LastError:         "elasticsearch: 429 rejected",
+		SchemaVersion:     SchemaVersion,
 	}
-
 	if err := store.Save(t.Context(), want); err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -155,7 +131,6 @@ func TestMySQLStoreRoundTripsEveryField(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-
 	if got.GTIDSet != want.GTIDSet ||
 		got.SnapshotDone != want.SnapshotDone ||
 		got.SnapshotStartGTID != want.SnapshotStartGTID ||
@@ -176,7 +151,6 @@ func TestMySQLStoreRoundTripsEveryField(t *testing.T) {
 func TestMySQLStoreUpsertsExistingStream(t *testing.T) {
 	store, _ := testStore(t)
 	ctx := t.Context()
-
 	first := Checkpoint{Stream: "orders_to_es", GTIDSet: "uuid:1-10", SeqWatermark: 100}
 	if err := store.Save(ctx, first); err != nil {
 		t.Fatalf("save: %v", err)
@@ -185,7 +159,6 @@ func TestMySQLStoreUpsertsExistingStream(t *testing.T) {
 	if err := store.Save(ctx, second); err != nil {
 		t.Fatalf("resave: %v", err)
 	}
-
 	got, err := store.Load(ctx, "orders_to_es")
 	if err != nil {
 		t.Fatalf("load: %v", err)
@@ -193,7 +166,6 @@ func TestMySQLStoreUpsertsExistingStream(t *testing.T) {
 	if got.GTIDSet != "uuid:1-20" || got.SeqWatermark != 200 || !got.SnapshotDone {
 		t.Fatalf("expected the second save to win, got %+v", got)
 	}
-
 	all, err := store.List(ctx)
 	if err != nil {
 		t.Fatalf("list: %v", err)
@@ -207,12 +179,10 @@ func TestMySQLStoreUpsertsExistingStream(t *testing.T) {
 // and a mangled cursor would resume a snapshot in the wrong place.
 func TestMySQLStorePreservesBinaryCursor(t *testing.T) {
 	store, _ := testStore(t)
-
 	cursor := []byte{0x00, 0xff, 0x41, 0x00, 0xfe}
 	if err := store.Save(t.Context(), Checkpoint{Stream: "s", SnapshotCursor: cursor}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-
 	got, err := store.Load(t.Context(), "s")
 	if err != nil {
 		t.Fatalf("load: %v", err)
@@ -224,16 +194,13 @@ func TestMySQLStorePreservesBinaryCursor(t *testing.T) {
 
 func TestMySQLStoreRefusesNewerSchemaVersion(t *testing.T) {
 	store, db := testStore(t)
-
 	if err := store.Save(t.Context(), Checkpoint{Stream: "s", GTIDSet: "uuid:1-1"}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	// Simulate a newer changeflow having written this row.
 	if _, err := db.ExecContext(t.Context(),
 		"UPDATE "+store.table+" SET schema_version = ? WHERE stream = ?", SchemaVersion+1, "s"); err != nil {
 		t.Fatalf("bump version: %v", err)
 	}
-
 	_, err := store.Load(t.Context(), "s")
 	if err == nil {
 		t.Fatal("expected a refusal to interpret a newer schema version")
@@ -245,12 +212,10 @@ func TestMySQLStoreRefusesNewerSchemaVersion(t *testing.T) {
 
 func TestMySQLStoreRejectsOversizedStreamName(t *testing.T) {
 	store, _ := testStore(t)
-
 	long := ""
 	for len(long) <= maxStreamNameLen {
 		long += "x"
 	}
-
 	if err := store.Save(t.Context(), Checkpoint{Stream: long}); err == nil {
 		t.Fatal("expected a name longer than the column to be rejected before reaching MySQL")
 	}
@@ -262,25 +227,20 @@ func TestStreamLockWaitsBrieflyForAContendedLock(t *testing.T) {
 	store, _ := testStore(t)
 	store.LockTimeout = 2 * time.Second
 	ctx := t.Context()
-
 	held, err := store.Lock(ctx, "orders_to_es")
 	if err != nil {
 		t.Fatalf("first lock: %v", err)
 	}
-
-	// Release from another goroutine while the second acquire is waiting.
 	go func() {
 		time.Sleep(300 * time.Millisecond)
 		_ = held.Release(context.Background())
 	}()
-
 	start := time.Now()
 	second, err := store.Lock(ctx, "orders_to_es")
 	if err != nil {
 		t.Fatalf("expected the wait to outlast the holder: %v", err)
 	}
 	defer second.Release(ctx)
-
 	if elapsed := time.Since(start); elapsed < 200*time.Millisecond {
 		t.Errorf("acquired in %v, which suggests it did not actually wait", elapsed)
 	}
@@ -289,18 +249,14 @@ func TestStreamLockWaitsBrieflyForAContendedLock(t *testing.T) {
 func TestStreamLockIsExclusive(t *testing.T) {
 	store, _ := testStore(t)
 	ctx := t.Context()
-
 	held, err := store.Lock(ctx, "orders_to_es")
 	if err != nil {
 		t.Fatalf("first lock: %v", err)
 	}
 	defer held.Release(ctx)
-
 	if _, err := store.Lock(ctx, "orders_to_es"); !errors.Is(err, ErrStreamLocked) {
 		t.Fatalf("expected ErrStreamLocked for a second holder, got %v", err)
 	}
-
-	// A different stream is unaffected.
 	other, err := store.Lock(ctx, "orders_to_clickhouse")
 	if err != nil {
 		t.Fatalf("expected an unrelated stream to be lockable: %v", err)
@@ -313,7 +269,6 @@ func TestStreamLockIsExclusive(t *testing.T) {
 func TestStreamLockIsReacquirableAfterRelease(t *testing.T) {
 	store, _ := testStore(t)
 	ctx := t.Context()
-
 	first, err := store.Lock(ctx, "orders_to_es")
 	if err != nil {
 		t.Fatalf("lock: %v", err)
@@ -321,7 +276,6 @@ func TestStreamLockIsReacquirableAfterRelease(t *testing.T) {
 	if err := first.Release(ctx); err != nil {
 		t.Fatalf("release: %v", err)
 	}
-
 	second, err := store.Lock(ctx, "orders_to_es")
 	if err != nil {
 		t.Fatalf("expected the lock to be free after release: %v", err)
@@ -337,14 +291,11 @@ func TestStreamLockIsReacquirableAfterRelease(t *testing.T) {
 func TestStreamLockSurvivesPoolActivity(t *testing.T) {
 	store, db := testStore(t)
 	ctx := t.Context()
-
 	held, err := store.Lock(ctx, "orders_to_es")
 	if err != nil {
 		t.Fatalf("lock: %v", err)
 	}
 	defer held.Release(ctx)
-
-	// Churn the pool well past its connection limit.
 	for i := 0; i < 40; i++ {
 		var one int
 		if err := db.QueryRowContext(ctx, "SELECT 1").Scan(&one); err != nil {
@@ -354,7 +305,6 @@ func TestStreamLockSurvivesPoolActivity(t *testing.T) {
 			t.Fatalf("save %d: %v", i, err)
 		}
 	}
-
 	if _, err := store.Lock(ctx, "orders_to_es"); !errors.Is(err, ErrStreamLocked) {
 		t.Fatalf("lock was lost during pool activity: second acquire returned %v", err)
 	}
@@ -369,14 +319,12 @@ func TestAllocatorAgainstMySQLStoreNeverRegresses(t *testing.T) {
 	store, _ := testStore(t)
 	ctx := t.Context()
 	clock := fixedClock(testClockMs)
-
 	first, err := NewAllocator(ctx, store, "orders_to_es", 20, clock)
 	if err != nil {
 		t.Fatalf("new allocator: %v", err)
 	}
-
 	var highest uint64
-	for i := 0; i < 25; i++ { // crosses a block boundary
+	for i := 0; i < 25; i++ {
 		v, err := first.Next(ctx)
 		if err != nil {
 			t.Fatalf("next: %v", err)
@@ -386,8 +334,6 @@ func TestAllocatorAgainstMySQLStoreNeverRegresses(t *testing.T) {
 		}
 		highest = v
 	}
-
-	// Restart against the same table.
 	second, err := NewAllocator(ctx, store, "orders_to_es", 20, clock)
 	if err != nil {
 		t.Fatalf("new allocator after restart: %v", err)
@@ -399,9 +345,6 @@ func TestAllocatorAgainstMySQLStoreNeverRegresses(t *testing.T) {
 	if next <= highest {
 		t.Fatalf("restart issued %d, which does not exceed the previous highest %d", next, highest)
 	}
-
-	// Wiping the row is the state-loss case: the wall-clock floor, not the
-	// watermark, is what keeps versions moving forward.
 	wiped, err := NewAllocator(ctx, NewMemoryStore(), "orders_to_es", 20, clock)
 	if err != nil {
 		t.Fatalf("new allocator on empty store: %v", err)
@@ -421,7 +364,6 @@ func TestNewMySQLStoreRejectsUnsafeTableNames(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	defer db.Close()
-
 	for _, name := range []string{
 		"",
 		"checkpoints; DROP TABLE users",
@@ -441,7 +383,6 @@ func TestNewMySQLStoreAcceptsQualifiedName(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	defer db.Close()
-
 	if _, err := NewMySQLStore(db, "changeflow_meta.changeflow_checkpoints"); err != nil {
 		t.Fatalf("expected a database-qualified table name to be accepted: %v", err)
 	}
@@ -451,14 +392,12 @@ func TestNewMySQLStoreAcceptsQualifiedName(t *testing.T) {
 // the process that failed.
 func TestRecordErrorKeepsTheReasonAStreamStopped(t *testing.T) {
 	store, _ := testStore(t)
-
 	if err := store.Save(t.Context(), Checkpoint{Stream: "orders", GTIDSet: "uuid:1-5"}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 	if err := store.RecordError(t.Context(), "orders", "sink refused the batch"); err != nil {
 		t.Fatalf("record: %v", err)
 	}
-
 	cp, err := store.Load(t.Context(), "orders")
 	if err != nil {
 		t.Fatalf("load: %v", err)
@@ -466,8 +405,6 @@ func TestRecordErrorKeepsTheReasonAStreamStopped(t *testing.T) {
 	if cp.LastError != "sink refused the batch" {
 		t.Errorf("last error = %q, want the recorded reason", cp.LastError)
 	}
-	// Recording a failure must not disturb the position, or a restart would replay from
-	// somewhere other than where the stream got to.
 	if cp.GTIDSet != "uuid:1-5" {
 		t.Errorf("position = %q, want it untouched", cp.GTIDSet)
 	}
@@ -475,14 +412,12 @@ func TestRecordErrorKeepsTheReasonAStreamStopped(t *testing.T) {
 
 func TestRecordErrorClearsAResolvedFailure(t *testing.T) {
 	store, _ := testStore(t)
-
 	if err := store.Save(t.Context(), Checkpoint{Stream: "orders", LastError: "old news"}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 	if err := store.RecordError(t.Context(), "orders", ""); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
-
 	cp, err := store.Load(t.Context(), "orders")
 	if err != nil {
 		t.Fatalf("load: %v", err)
@@ -496,14 +431,12 @@ func TestRecordErrorClearsAResolvedFailure(t *testing.T) {
 // the write that is trying to explain a failure.
 func TestRecordErrorTruncatesAnOverlongReason(t *testing.T) {
 	store, _ := testStore(t)
-
 	if err := store.Save(t.Context(), Checkpoint{Stream: "orders"}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 	if err := store.RecordError(t.Context(), "orders", strings.Repeat("x", 5000)); err != nil {
 		t.Fatalf("record: %v", err)
 	}
-
 	cp, err := store.Load(t.Context(), "orders")
 	if err != nil {
 		t.Fatalf("load: %v", err)
@@ -520,7 +453,6 @@ func TestRecordErrorTruncatesAnOverlongReason(t *testing.T) {
 // that is not an error.
 func TestRecordErrorOnAnUnknownStreamIsNotAnError(t *testing.T) {
 	store, _ := testStore(t)
-
 	if err := store.RecordError(t.Context(), "never_ran", "something"); err != nil {
 		t.Errorf("record: %v", err)
 	}
@@ -535,14 +467,11 @@ func TestEnsureSchemaWorksWithDMLRightsOnly(t *testing.T) {
 		t.Skip("set CHANGEFLOW_TEST_WRITE_DSN to a user that may grant, to run this")
 	}
 	store, _ := testStore(t)
-
 	admin, err := sql.Open("mysql", adminDSN)
 	if err != nil {
 		t.Fatalf("open admin: %v", err)
 	}
 	defer admin.Close()
-
-	// A user with exactly the rights the README asks for, and nothing more.
 	const user = "cf_dml_only"
 	for _, statement := range []string{
 		"DROP USER IF EXISTS '" + user + "'@'%'",
@@ -556,23 +485,18 @@ func TestEnsureSchemaWorksWithDMLRightsOnly(t *testing.T) {
 	t.Cleanup(func() {
 		_, _ = admin.Exec("DROP USER IF EXISTS '" + user + "'@'%'")
 	})
-
 	restricted, err := sql.Open("mysql", "cf_dml_only:secret@tcp("+hostOf(adminDSN)+")/changeflow_meta")
 	if err != nil {
 		t.Fatalf("open restricted: %v", err)
 	}
 	defer restricted.Close()
-
 	limited, err := NewMySQLStore(restricted, store.table)
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
-
-	// The table exists, applied by whoever holds DDL rights.
 	if err := limited.EnsureSchema(t.Context()); err != nil {
 		t.Fatalf("a service with DML rights only could not start: %v", err)
 	}
-	// And it can do the work it exists to do.
 	if err := limited.Save(t.Context(), Checkpoint{Stream: "orders", GTIDSet: "uuid:1-9"}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -581,8 +505,6 @@ func TestEnsureSchemaWorksWithDMLRightsOnly(t *testing.T) {
 	}
 }
 
-// hostOf pulls the address out of a DSN, so a restricted user can be pointed at the same
-// server without a second variable to keep in step.
 func hostOf(dsn string) string {
 	start := strings.Index(dsn, "tcp(")
 	if start < 0 {

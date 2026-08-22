@@ -18,13 +18,10 @@ func TestByteSizeParsing(t *testing.T) {
 		{"64MiB", 64 * 1024 * 1024},
 		{"1GiB", 1024 * 1024 * 1024},
 		{"512KiB", 512 * 1024},
-		// SI units are decimal, and the difference matters when sizing a batch
-		// against a service's real request limit.
 		{"1KB", 1000},
 		{"5MB", 5_000_000},
 		{"2GB", 2_000_000_000},
 		{"1B", 1},
-		// Formatting people actually write.
 		{" 5 MiB ", 5 * 1024 * 1024},
 		{"5mib", 5 * 1024 * 1024},
 	} {
@@ -64,7 +61,7 @@ func TestByteSizeStringRoundTrips(t *testing.T) {
 		{0, "0B"},
 		{1024, "1KiB"},
 		{5 * 1024 * 1024, "5MiB"},
-		{1536, "1536B"}, // not a whole unit, so reported exactly
+		{1536, "1536B"},
 	} {
 		if got := tc.in.String(); got != tc.want {
 			t.Errorf("ByteSize(%d).String() = %q, want %q", uint64(tc.in), got, tc.want)
@@ -99,8 +96,6 @@ func TestDurationParsing(t *testing.T) {
 }
 
 func TestDurationRejectsNonsense(t *testing.T) {
-	// A bare number is rejected on purpose: "5" is ambiguous between seconds and
-	// milliseconds, and guessing wrong changes behaviour silently.
 	for _, in := range []string{"", "5", "soon", "-2s", "2 s"} {
 		t.Run(in, func(t *testing.T) {
 			var got Duration

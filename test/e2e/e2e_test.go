@@ -1,13 +1,3 @@
-// Package e2e drives the real binary against a real MySQL and a real
-// Elasticsearch.
-//
-// Everything here is deliberately black box: it starts the compiled process,
-// writes to MySQL, and reads from Elasticsearch. Nothing imports changeflow's
-// packages, so the test cannot accidentally assert against an internal shortcut,
-// and killing the process outright is a genuine crash rather than a simulated one.
-//
-// The tests skip unless CHANGEFLOW_E2E is set, so an ordinary `go test ./...` stays
-// hermetic.
 package e2e
 
 import (
@@ -39,58 +29,42 @@ const (
 	defaultMetaDSN  = "root:root@tcp(127.0.0.1:13306)/changeflow_meta"
 	defaultESURL    = "http://127.0.0.1:19200"
 	defaultCHDSN    = "http://changeflow:changeflow@127.0.0.1:18123/?database=analytics"
-	// Elasticsearch is not searchable the instant a write is acknowledged, and a
-	// restart replays a batch, so assertions poll rather than assume.
-	settleTimeout = 45 * time.Second
+	settleTimeout   = 45 * time.Second
 )
 
 type env struct {
-	t *testing.T
-	// running is the process under test, so a failed assertion can report what it
-	// was doing rather than only that nothing happened.
-	running  *process
-	db       *sql.DB
-	esURL    string
-	index    string
-	binary   string
-	config   string
-	dlqDir   string
-	metaDSN  string
-	mysqlDSN string
-	chDSN    string
-	// writeIndex is the concrete index documents go to, which a rebuild changes.
-	writeIndex string
-	// alias is what readers query, and what a completed scan is promoted to.
-	alias string
-	// created records the indices this test made, so teardown removes them all.
+	t            *testing.T
+	running      *process
+	db           *sql.DB
+	esURL        string
+	index        string
+	binary       string
+	config       string
+	dlqDir       string
+	metaDSN      string
+	mysqlDSN     string
+	chDSN        string
+	writeIndex   string
+	alias        string
 	created      []string
 	indexCreated bool
-	// snapshotRate throttles a table scan, for the tests that need to observe one in
-	// progress rather than only its result.
 	snapshotRate int
 }
 
 func setup(t *testing.T) *env {
 	t.Helper()
-
 	if os.Getenv("CHANGEFLOW_E2E") == "" {
 		t.Skip("set CHANGEFLOW_E2E=1 to run end-to-end tests against MySQL and Elasticsearch")
 	}
-
 	e := &env{
 		t:        t,
 		esURL:    envOr("CHANGEFLOW_E2E_ES_URL", defaultESURL),
 		mysqlDSN: envOr("CHANGEFLOW_E2E_MYSQL_DSN", defaultMySQLDSN),
 		metaDSN:  envOr("CHANGEFLOW_E2E_META_DSN", defaultMetaDSN),
 		chDSN:    envOr("CHANGEFLOW_E2E_CH_DSN", defaultCHDSN),
-		// A per-test index and stream keep runs independent, so one failure does not
-		// leave state that breaks the next. The name is a digest rather than the test
-		// name: stream names are capped at 48 characters by the checkpoint column, and
-		// some of these test names are longer than that on their own.
-		index:  "orders_e2e_" + shortHash(t.Name()),
-		dlqDir: t.TempDir(),
+		index:    "orders_e2e_" + shortHash(t.Name()),
+		dlqDir:   t.TempDir(),
 	}
-
 	db, err := sql.Open("mysql", e.mysqlDSN)
 	if err != nil {
 		t.Fatalf("open mysql: %v", err)
@@ -100,17 +74,11 @@ func setup(t *testing.T) *env {
 		t.Fatalf("connect to mysql: %v", err)
 	}
 	e.db = db
-
 	e.writeIndex = e.index
 	e.alias = e.index + "_read"
-
 	e.binary = buildBinary(t)
-	// The configuration comes first: a generated schema is derived from it.
 	e.config = e.writeConfig()
-
 	t.Cleanup(func() {
-		// Only the destination this test actually used needs tidying, so a test for one
-		// does not fail on the absence of the other.
 		for _, index := range e.created {
 			e.esRequest(http.MethodDelete, "/"+index, "")
 		}
@@ -119,7 +87,6 @@ func setup(t *testing.T) *env {
 			t.Logf("could not clear the checkpoint: %v", err)
 		}
 	})
-
 	return e
 }
 
@@ -130,8 +97,6 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-// shortHash gives a stable, lowercase, bounded name for a test. Elasticsearch
-// requires lowercase index names, and changeflow bounds stream names.
 func shortHash(name string) string {
 	sum := sha256.Sum256([]byte(name))
 	return hex.EncodeToString(sum[:6])
@@ -141,11 +106,8 @@ func tableFor(string) string { return "changeflow_meta.changeflow_checkpoints" }
 
 func (e *env) streamName() string { return e.index }
 
-// buildBinary compiles the command under test, so the test exercises what would
-// actually be deployed.
 func buildBinary(t *testing.T) string {
 	t.Helper()
-
 	path := filepath.Join(t.TempDir(), "changeflow")
 	cmd := exec.Command("go", "build", "-o", path, "./cmd/changeflow")
 	cmd.Dir = repoRoot(t)
@@ -157,7 +119,6 @@ func buildBinary(t *testing.T) string {
 
 func repoRoot(t *testing.T) string {
 	t.Helper()
-
 	dir, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
@@ -174,19 +135,8 @@ func repoRoot(t *testing.T) string {
 	}
 }
 
-// createIndex installs the mapping the binary generates for this stream.
-//
-// Generated rather than hand-written, so the index cannot drift from the type map
-// replication uses: a mapping that guesses `long` for an unsigned identifier would
-// wrap every value above 2^63. Applying it separately is also how it works in
-// production, where changeflow never issues DDL.
-// ensureIndex creates the index on first use.
-//
-// Idempotent because a test may start the process more than once, and recreating the
-// index between restarts would discard the documents the test is about to assert on.
 func (e *env) ensureIndex() {
 	e.t.Helper()
-
 	if e.indexCreated {
 		return
 	}
@@ -195,13 +145,10 @@ func (e *env) ensureIndex() {
 	e.indexCreated = true
 }
 
-// requireElasticsearch skips when Elasticsearch is not reachable.
 func (e *env) requireElasticsearch() {
 	e.t.Helper()
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.esURL+"/_cluster/health", nil)
 	if err != nil {
 		e.t.Fatalf("build request: %v", err)
@@ -223,7 +170,6 @@ func (e *env) createIndex() {
 
 func (e *env) createIndexFor(stream, index string) {
 	e.t.Helper()
-
 	cmd := exec.Command(e.binary, "generate-schema",
 		"-c", e.config, "--stream", stream, "--replicas", "0")
 	cmd.Dir = repoRoot(e.t)
@@ -231,7 +177,6 @@ func (e *env) createIndexFor(stream, index string) {
 	if err != nil {
 		e.t.Fatalf("generate schema: %v", err)
 	}
-
 	e.esRequest(http.MethodDelete, "/"+index, "")
 	status, payload := e.esRequest(http.MethodPut, "/"+index, string(mapping))
 	if status >= 300 {
@@ -240,18 +185,8 @@ func (e *env) createIndexFor(stream, index string) {
 	e.created = append(e.created, index)
 }
 
-// createIndexManually installs a hand-written mapping for the one test that needs a
-// destination which refuses a particular document.
-//
-// Every field has the type the stream sends, so this passes the startup check that
-// compares the two — a mapping that disagreed on a type would never get as far as
-// writing anything. What it narrows is the accepted form of one nullable field:
-// placed_at takes a plain date, so a row carrying a time of day is refused while every
-// row that leaves it null is accepted. That is what a dead letter test needs: one
-// document turned away, and a stream that carries on.
 func (e *env) createIndexManually() {
 	e.t.Helper()
-
 	body := `{
 	  "settings": {"number_of_shards": 1, "number_of_replicas": 0},
 	  "mappings": {
@@ -270,7 +205,6 @@ func (e *env) createIndexManually() {
 	    }
 	  }
 	}`
-
 	e.deleteIndex()
 	status, payload := e.esRequest(http.MethodPut, "/"+e.index, body)
 	if status >= 300 {
@@ -287,7 +221,6 @@ func (e *env) writeConfig() string {
 	return e.writeConfigWith(false)
 }
 
-// writeConfigWith produces a configuration with or without the initial table scan.
 func (e *env) writeConfigWith(snapshot bool) string {
 	e.t.Helper()
 	return e.writeConfigFor(sinkElasticsearch, snapshot)
@@ -300,14 +233,11 @@ const (
 	sinkClickHouse
 )
 
-// writeConfigFor produces a configuration for either destination.
 func (e *env) writeConfigFor(kind sinkKind, snapshot bool) string {
 	e.t.Helper()
-
 	if kind == sinkClickHouse {
 		return e.writeClickHouseConfig(snapshot)
 	}
-
 	path := filepath.Join(e.t.TempDir(), "changeflow.yaml")
 	body := fmt.Sprintf(`
 source:
@@ -338,14 +268,12 @@ streams:
       key: [id]
       exclude: [internal_note]
 `, e.mysqlDSN, 7000+time.Now().UnixNano()%900, e.metaDSN, e.streamName(), snapshot, e.rateLimit(), e.esURL, e.writeIndex, e.alias)
-
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		e.t.Fatalf("write config: %v", err)
 	}
 	return path
 }
 
-// rateLimit renders the scan throttle, or nothing when the scan should run flat out.
 func (e *env) rateLimit() string {
 	if e.snapshotRate <= 0 {
 		return ""
@@ -355,7 +283,6 @@ func (e *env) rateLimit() string {
 
 func (e *env) writeClickHouseConfig(snapshot bool) string {
 	e.t.Helper()
-
 	path := filepath.Join(e.t.TempDir(), "changeflow-clickhouse.yaml")
 	body := fmt.Sprintf(`
 source:
@@ -385,22 +312,16 @@ streams:
       key: [id]
       exclude: [internal_note]
 `, e.mysqlDSN, 7500+time.Now().UnixNano()%400, e.metaDSN, e.streamName(), snapshot, e.chDSN, e.chTable())
-
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		e.t.Fatalf("write config: %v", err)
 	}
 	return path
 }
 
-// secondStreamName is another stream over the same table, which is what makes one
-// reader fan out rather than feed a single pipeline.
 func (e *env) secondStreamName() string { return e.index + "_b" }
 
-// writeFanoutConfig declares two streams over one table, each with its own index,
-// mapping, and position.
 func (e *env) writeFanoutConfig() string {
 	e.t.Helper()
-
 	path := filepath.Join(e.t.TempDir(), "changeflow-fanout.yaml")
 	body := fmt.Sprintf(`
 source:
@@ -446,21 +367,16 @@ streams:
 		e.mysqlDSN, 7000+time.Now().UnixNano()%900, e.metaDSN,
 		e.streamName(), e.esURL, e.writeIndex,
 		e.secondStreamName(), e.esURL, e.secondStreamName())
-
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		e.t.Fatalf("write config: %v", err)
 	}
 	return path
 }
 
-// dumpThreads counts the replication connections the source is serving, which is how
-// a shared reader is told apart from one connection per stream.
 func (e *env) dumpThreads() int {
 	e.t.Helper()
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
 	var count int
 	err := e.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM information_schema.processlist WHERE command LIKE 'Binlog Dump%'`,
@@ -471,14 +387,10 @@ func (e *env) dumpThreads() int {
 	return count
 }
 
-// checkpointPosition returns the recorded position for a stream, or the empty string
-// when the stream has never checkpointed.
 func (e *env) checkpointPosition(stream string) string {
 	e.t.Helper()
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
 	var gtid string
 	err := e.db.QueryRowContext(ctx,
 		"SELECT gtid_set FROM "+tableFor(e.metaDSN)+" WHERE stream = ?", stream,
@@ -492,13 +404,11 @@ func (e *env) checkpointPosition(stream string) string {
 	return gtid
 }
 
-// process is a running changeflow.
 type process struct {
 	cmd *exec.Cmd
 	log *bytes.Buffer
 }
 
-// startWithSnapshot launches the binary with the initial table scan enabled.
 func (e *env) startWithSnapshot() *process {
 	e.t.Helper()
 	e.config = e.writeConfigWith(true)
@@ -506,77 +416,55 @@ func (e *env) startWithSnapshot() *process {
 	return e.launch()
 }
 
-// start launches the binary against Elasticsearch. The returned process must be
-// stopped by the caller.
 func (e *env) start() *process {
 	e.t.Helper()
 	e.ensureIndex()
 	return e.launch()
 }
 
-// launch starts the process without assuming a destination, so a ClickHouse test does
-// not create an index it will never use.
 func (e *env) launch() *process {
 	e.t.Helper()
 	return e.launchStream(e.streamName())
 }
 
-// launchAll starts every stream in the configuration, which is the normal deployment:
-// one process reading the source once for all of them.
 func (e *env) launchAll() *process {
 	e.t.Helper()
 	return e.launchStream("")
 }
 
-// launchStream starts the process and waits until it is replicating.
 func (e *env) launchStream(stream string) *process {
 	e.t.Helper()
 	return e.launchStreamUntil(stream, "replication started")
 }
 
-// launchScanning starts the process and returns while the table scan is still running.
-//
-// Replication begins only once a scan has finished, so a test whose subject is what
-// happens during a scan cannot wait for that: it would be handed a process that had
-// already done the work, and would pass without ever exercising the case.
 func (e *env) launchScanning() *process {
 	e.t.Helper()
 	e.ensureIndex()
 	return e.launchStreamUntil(e.streamName(), "starting a table scan", "resuming a table scan")
 }
 
-// startScanning writes a configuration with the initial scan enabled and launches into it.
 func (e *env) startScanning() *process {
 	e.t.Helper()
 	e.config = e.writeConfigWith(true)
 	return e.launchScanning()
 }
 
-// launchStreamUntil starts the process, naming one stream or, given an empty name, all of
-// them, and waits for any of the given markers to appear in its log.
 func (e *env) launchStreamUntil(stream string, markers ...string) *process {
 	e.t.Helper()
-
 	args := []string{"run", "-c", e.config, "--dlq-dir", e.dlqDir}
 	if stream != "" {
 		args = append(args, "--stream", stream)
 	}
-
 	log := &bytes.Buffer{}
 	cmd := exec.Command(e.binary, args...)
 	cmd.Stdout, cmd.Stderr = log, log
-	// A process group lets the test kill the whole thing outright.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-
 	if err := cmd.Start(); err != nil {
 		e.t.Fatalf("start changeflow: %v", err)
 	}
 	p := &process{cmd: cmd, log: log}
 	e.running = p
 	e.t.Cleanup(func() { p.stop() })
-
-	// Wait for the process to reach the state the caller needs. Returning earlier would
-	// have a test's writes happen before anything was listening for them.
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		out := log.String()
@@ -598,7 +486,6 @@ func (p *process) exited() bool {
 	return p.cmd.ProcessState != nil && p.cmd.ProcessState.Exited()
 }
 
-// stop asks the process to finish, which flushes and checkpoints.
 func (p *process) stop() {
 	if p.cmd.Process == nil || p.exited() {
 		return
@@ -613,8 +500,6 @@ func (p *process) stop() {
 	}
 }
 
-// kill terminates the process without warning, which is the failure the design's
-// checkpoint ordering exists to survive.
 func (p *process) kill() {
 	if p.cmd.Process == nil {
 		return
@@ -625,10 +510,8 @@ func (p *process) kill() {
 
 func (e *env) exec(query string, args ...any) {
 	e.t.Helper()
-
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-
 	if _, err := e.db.ExecContext(ctx, query, args...); err != nil {
 		e.t.Fatalf("exec %q: %v", query, err)
 	}
@@ -636,16 +519,12 @@ func (e *env) exec(query string, args ...any) {
 
 func (e *env) esRequest(method, path, body string) (int, string) {
 	e.t.Helper()
-
 	var reader io.Reader
 	if body != "" {
 		reader = strings.NewReader(body)
 	}
-	// Deliberately not the test's context: cleanup runs after it is cancelled, and
-	// every teardown would otherwise fail the test it was tidying up after.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-
 	req, err := http.NewRequestWithContext(ctx, method, e.esURL+path, reader)
 	if err != nil {
 		e.t.Fatalf("build request: %v", err)
@@ -653,7 +532,6 @@ func (e *env) esRequest(method, path, body string) (int, string) {
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
-
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		e.t.Fatalf("%s %s: %v", method, path, err)
@@ -663,7 +541,6 @@ func (e *env) esRequest(method, path, body string) (int, string) {
 	return resp.StatusCode, string(payload)
 }
 
-// document fetches one document, reporting whether it exists.
 func (e *env) document(id string) (map[string]any, bool) {
 	e.t.Helper()
 	return e.documentIn(e.writeIndex, id)
@@ -671,7 +548,6 @@ func (e *env) document(id string) (map[string]any, bool) {
 
 func (e *env) documentIn(index, id string) (map[string]any, bool) {
 	e.t.Helper()
-
 	status, payload := e.esRequest(http.MethodGet, "/"+index+"/_doc/"+id, "")
 	if status == http.StatusNotFound {
 		return nil, false
@@ -679,14 +555,10 @@ func (e *env) documentIn(index, id string) (map[string]any, bool) {
 	if status >= 300 {
 		e.t.Fatalf("get document %s: status %d: %s", id, status, payload)
 	}
-
 	var envelope struct {
 		Found  bool           `json:"found"`
 		Source map[string]any `json:"_source"`
 	}
-	// UseNumber keeps large integers exact. Decoded as float64, an unsigned 64-bit
-	// identifier comes back as 1.8446744073709552e+19, which would make this test
-	// report a corruption that only happened in the test.
 	dec := json.NewDecoder(strings.NewReader(payload))
 	dec.UseNumber()
 	if err := dec.Decode(&envelope); err != nil {
@@ -695,11 +567,8 @@ func (e *env) documentIn(index, id string) (map[string]any, bool) {
 	return envelope.Source, envelope.Found
 }
 
-// waitFor polls until the condition holds, which is how a test tolerates
-// replication lag and index refresh without guessing at a sleep.
 func (e *env) waitFor(what string, condition func() bool) {
 	e.t.Helper()
-
 	deadline := time.Now().Add(settleTimeout)
 	for time.Now().Before(deadline) {
 		e.refresh()
@@ -711,7 +580,6 @@ func (e *env) waitFor(what string, condition func() bool) {
 	e.t.Fatalf("timed out waiting for %s\nchangeflow log:\n%s", what, e.processLog())
 }
 
-// processLog returns the tail of the running process's output.
 func (e *env) processLog() string {
 	if e.running == nil {
 		return "(no process was started)"
@@ -734,7 +602,6 @@ func (e *env) refreshIndex(index string) {
 
 func (e *env) waitForDocument(id string) map[string]any {
 	e.t.Helper()
-
 	var doc map[string]any
 	e.waitFor("document "+id+" to appear", func() bool {
 		var found bool
@@ -746,7 +613,6 @@ func (e *env) waitForDocument(id string) map[string]any {
 
 func (e *env) countDocuments() int {
 	e.t.Helper()
-
 	e.refresh()
 	status, payload := e.esRequest(http.MethodGet, "/"+e.writeIndex+"/_count", "")
 	if status >= 300 {
@@ -759,17 +625,13 @@ func (e *env) countDocuments() int {
 	return result.Count
 }
 
-// documentIDs returns every document id in the index, for diagnosing a count that
-// does not match expectations.
 func (e *env) documentIDs() []string {
 	e.t.Helper()
-
 	e.refresh()
 	status, payload := e.esRequest(http.MethodGet, "/"+e.writeIndex+"/_search?size=200&_source=false&sort=_doc", "")
 	if status >= 300 {
 		e.t.Fatalf("search: status %d: %s", status, payload)
 	}
-
 	var result struct {
 		Hits struct {
 			Hits []struct {
@@ -780,7 +642,6 @@ func (e *env) documentIDs() []string {
 	if err := json.Unmarshal([]byte(payload), &result); err != nil {
 		e.t.Fatalf("decode search: %v", err)
 	}
-
 	ids := make([]string, 0, len(result.Hits.Hits))
 	for _, hit := range result.Hits.Hits {
 		ids = append(ids, hit.ID)
@@ -788,18 +649,14 @@ func (e *env) documentIDs() []string {
 	return ids
 }
 
-// countInRange counts documents whose identifier falls in a range, which is how a
-// test asserts on the rows it wrote rather than on whatever else the table holds.
 func (e *env) countInRange(from, to uint64) int {
 	e.t.Helper()
-
 	e.refresh()
 	query := fmt.Sprintf(`{"query":{"range":{"id":{"gte":%d,"lte":%d}}}}`, from, to)
 	status, payload := e.esRequest(http.MethodPost, "/"+e.writeIndex+"/_count", query)
 	if status >= 300 {
 		e.t.Fatalf("count in range: status %d: %s", status, payload)
 	}
-
 	var result struct{ Count int }
 	if err := json.Unmarshal([]byte(payload), &result); err != nil {
 		e.t.Fatalf("decode count: %v", err)
@@ -810,14 +667,9 @@ func (e *env) countInRange(from, to uint64) int {
 func TestInsertReachesElasticsearch(t *testing.T) {
 	e := setup(t)
 	e.start()
-
 	e.exec(`INSERT INTO orders (id,user_id,status,channels,total_amount,is_gift,note_latin1,placed_at)
 	        VALUES (20001, 18446744073709551001, 'paid', 'web,ios', 19.90, 1, 'café', '2026-08-11 10:00:00.000')`)
-
 	doc := e.waitForDocument("20001")
-
-	// Each of these is a decision the type map makes, checked against a real index
-	// rather than a stub.
 	if got := fmt.Sprint(doc["user_id"]); got != "18446744073709551001" {
 		t.Errorf("user_id = %v, want the exact unsigned value", doc["user_id"])
 	}
@@ -844,16 +696,13 @@ func TestInsertReachesElasticsearch(t *testing.T) {
 func TestUpdateAndDeletePropagate(t *testing.T) {
 	e := setup(t)
 	e.start()
-
 	e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (20010,7,'draft',1.00)")
 	e.waitForDocument("20010")
-
 	e.exec("UPDATE orders SET status='shipped', total_amount=2.50 WHERE id=20010")
 	e.waitFor("the update to be applied", func() bool {
 		doc, found := e.document("20010")
 		return found && doc["status"] == "shipped" && doc["total_amount"] == "2.50"
 	})
-
 	e.exec("DELETE FROM orders WHERE id=20010")
 	e.waitFor("the delete to be applied", func() bool {
 		_, found := e.document("20010")
@@ -866,12 +715,9 @@ func TestUpdateAndDeletePropagate(t *testing.T) {
 func TestKeyChangeRemovesTheOldDocument(t *testing.T) {
 	e := setup(t)
 	e.start()
-
 	e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (20020,7,'paid',5.00)")
 	e.waitForDocument("20020")
-
 	e.exec("UPDATE orders SET id=20021 WHERE id=20020")
-
 	e.waitFor("the new key to appear and the old one to be gone", func() bool {
 		_, oldFound := e.document("20020")
 		_, newFound := e.document("20021")
@@ -885,7 +731,6 @@ func TestKeyChangeRemovesTheOldDocument(t *testing.T) {
 func TestOneConnectionServesTwoStreams(t *testing.T) {
 	e := setup(t)
 	e.requireElasticsearch()
-
 	second := e.secondStreamName()
 	e.config = e.writeFanoutConfig()
 	e.createIndexFor(e.streamName(), e.writeIndex)
@@ -895,15 +740,12 @@ func TestOneConnectionServesTwoStreams(t *testing.T) {
 			t.Logf("could not clear the checkpoint for %s: %v", second, err)
 		}
 	})
-
 	p := e.launchAll()
-
 	e.exec(`INSERT INTO orders (id,user_id,status,total_amount,note_latin1)
 	        VALUES (20300,7,'paid',3.50,'café')`)
 	e.exec("UPDATE orders SET status='shipped' WHERE id=20300")
 	e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (20301,7,'draft',1.00)")
 	e.exec("DELETE FROM orders WHERE id=20301")
-
 	for _, index := range []string{e.writeIndex, second} {
 		e.waitFor("both changes to reach "+index, func() bool {
 			e.refreshIndex(index)
@@ -915,26 +757,18 @@ func TestOneConnectionServesTwoStreams(t *testing.T) {
 			return !deletedStillPresent
 		})
 	}
-
-	// Each stream applies its own mapping to the same event.
 	if doc, _ := e.documentIn(e.writeIndex, "20300"); doc["note_latin1"] != "café" {
 		t.Errorf("note_latin1 = %v in %s, want the column the first stream includes", doc["note_latin1"], e.writeIndex)
 	}
 	if doc, _ := e.documentIn(second, "20300"); doc["note_latin1"] != nil {
 		t.Errorf("note_latin1 = %v in %s, want it absent: the second stream excludes it", doc["note_latin1"], second)
 	}
-
-	// A connection closed by an earlier scenario can still be listed for a moment, so
-	// this waits for the count to settle rather than reading it once.
 	e.waitFor("the source to be serving exactly one replication connection", func() bool {
 		return e.dumpThreads() == 1
 	})
 	if got := strings.Count(p.log.String(), "replication started"); got != 1 {
 		t.Errorf("replication was started %d times, want once\nlog:\n%s", got, e.processLog())
 	}
-
-	// Positions are per stream, so one falling behind or being run alone later does not
-	// move the other.
 	p.stop()
 	for _, stream := range []string{e.streamName(), second} {
 		if e.checkpointPosition(stream) == "" {
@@ -949,28 +783,18 @@ func TestOneConnectionServesTwoStreams(t *testing.T) {
 func TestConvergesAfterAnAbruptKill(t *testing.T) {
 	e := setup(t)
 	p := e.start()
-
 	const total = 300
 	for i := 0; i < total; i++ {
 		e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (?,7,'paid',1.00)", 21000+i)
 	}
-
-	// Kill while batches are still in flight, without warning.
 	e.waitFor("some documents to arrive", func() bool { return e.countDocuments() > 0 })
 	p.kill()
-
 	before := e.countDocuments()
 	t.Logf("killed with %d of %d documents written", before, total)
-
-	// A restart resumes from the last acknowledged position.
 	e.start()
-
 	e.waitFor(fmt.Sprintf("all %d documents to converge", total), func() bool {
 		return e.countDocuments() == total
 	})
-
-	// Spot check the boundaries: a gap would most likely appear at the point of the
-	// kill, and an off-by-one at the ends.
 	for _, id := range []string{"21000", fmt.Sprint(21000 + total/2), fmt.Sprint(21000 + total - 1)} {
 		if _, found := e.document(id); !found {
 			t.Errorf("document %s is missing after recovery", id)
@@ -983,7 +807,6 @@ func TestConvergesAfterAnAbruptKill(t *testing.T) {
 func TestRestartIsIdempotent(t *testing.T) {
 	e := setup(t)
 	p := e.start()
-
 	const (
 		firstID = 22000
 		rows    = 20
@@ -994,21 +817,12 @@ func TestRestartIsIdempotent(t *testing.T) {
 	e.waitFor("the rows to arrive", func() bool {
 		return e.countInRange(firstID, firstID+rows-1) == rows
 	})
-
 	p.stop()
 	e.start()
-
-	// Long enough for the restarted process to replay whatever it re-reads.
 	time.Sleep(3 * time.Second)
-
-	// The rows this test wrote are what it is entitled to assert on: one document
-	// per key, no more and no fewer.
 	if got := e.countInRange(firstID, firstID+rows-1); got != rows {
 		t.Errorf("documents in the written range = %d, want %d", got, rows)
 	}
-
-	// Anything else in the index did not come from this test, and naming it is more
-	// useful than reporting a total that does not add up.
 	if ids := e.documentIDs(); len(ids) != rows {
 		var strays []string
 		for _, id := range ids {
@@ -1025,21 +839,14 @@ func TestRestartIsIdempotent(t *testing.T) {
 // scan can deliver them. This is the whole reason the snapshot phase exists.
 func TestPreexistingRowsAreBackfilled(t *testing.T) {
 	e := setup(t)
-
-	// Written before anything is running, and never touched again, so nothing about
-	// them will ever appear in the binlog.
 	const firstID = 23000
 	for i := 0; i < 25; i++ {
 		e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (?,7,'paid',1.00)", firstID+i)
 	}
-
 	e.startWithSnapshot()
-
 	e.waitFor("the pre-existing rows to be backfilled", func() bool {
 		return e.countInRange(firstID, firstID+24) == 25
 	})
-
-	// A change made after the scan must still be applied on top of it.
 	e.exec("UPDATE orders SET status='shipped' WHERE id=?", firstID)
 	e.waitFor("a later change to be applied over the scanned row", func() bool {
 		doc, found := e.document(fmt.Sprint(firstID))
@@ -1051,19 +858,12 @@ func TestPreexistingRowsAreBackfilled(t *testing.T) {
 // every row.
 func TestInterruptedBackfillResumes(t *testing.T) {
 	e := setup(t)
-
 	const firstID = 23500
 	for i := 0; i < 120; i++ {
 		e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (?,7,'paid',1.00)", firstID+i)
 	}
-
-	// Throttled, because an unthrottled scan of this table finishes between two polls:
-	// the kill would land after it, and the test would pass without interrupting
-	// anything.
 	e.snapshotRate = 60
 	p := e.startScanning()
-
-	// Kill once some rows have landed but before the scan can have finished.
 	e.waitFor("the scan to start delivering rows", func() bool {
 		return e.countInRange(firstID, firstID+119) > 0
 	})
@@ -1073,7 +873,6 @@ func TestInterruptedBackfillResumes(t *testing.T) {
 	if killedAt >= 120 {
 		t.Fatalf("the scan had already finished, so nothing was interrupted")
 	}
-
 	e.startScanning()
 	e.waitFor("the backfill to complete after a restart", func() bool {
 		return e.countInRange(firstID, firstID+119) == 120
@@ -1084,29 +883,19 @@ func TestInterruptedBackfillResumes(t *testing.T) {
 // row, which is what makes scanning without a table lock safe.
 func TestConcurrentChangeWinsOverTheScannedRow(t *testing.T) {
 	e := setup(t)
-
 	const firstID = 24500
 	for i := 0; i < 200; i++ {
 		e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (?,7,'draft',1.00)", firstID+i)
 	}
-
-	// Throttled so the scan is still running when the change is made. Unthrottled it
-	// finishes first, and the change would be an ordinary update to a complete index
-	// rather than the race this exists to test.
 	e.snapshotRate = 60
 	e.startScanning()
-
 	e.waitFor("the scan to start delivering rows", func() bool {
 		return e.countInRange(firstID, firstID+199) > 0
 	})
 	if scanned := e.countInRange(firstID, firstID+199); scanned >= 200 {
 		t.Fatalf("the scan finished before the change could be made, so nothing raced")
 	}
-
-	// Change a row the scan has not reached yet. Whichever order the two reach the
-	// destination, the change must be the version that survives.
 	e.exec("UPDATE orders SET status='cancelled' WHERE id=?", firstID+199)
-
 	e.waitFor("the whole table to be backfilled", func() bool {
 		return e.countInRange(firstID, firstID+199) == 200
 	})
@@ -1119,10 +908,8 @@ func TestConcurrentChangeWinsOverTheScannedRow(t *testing.T) {
 func TestStatusReportsProgress(t *testing.T) {
 	e := setup(t)
 	e.start()
-
 	e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (24000,7,'paid',1.00)")
 	e.waitForDocument("24000")
-
 	out, err := exec.CommandContext(e.t.Context(), e.binary, "status", "-c", e.config).CombinedOutput()
 	if err != nil {
 		t.Fatalf("status: %v\n%s", err, out)
@@ -1130,7 +917,6 @@ func TestStatusReportsProgress(t *testing.T) {
 	if !strings.Contains(string(out), e.streamName()) {
 		t.Errorf("status does not mention the stream:\n%s", out)
 	}
-	// A position means something was acknowledged and recorded.
 	if strings.Contains(string(out), "not started") {
 		t.Errorf("status still reports the stream as not started:\n%s", out)
 	}
@@ -1146,26 +932,18 @@ func TestStatusReportsProgress(t *testing.T) {
 // reject teaches nothing, because changeflow would never see it.
 func TestRefusedDocumentGoesToTheDeadLetterQueueAndStreamContinues(t *testing.T) {
 	e := setup(t)
-	// A deliberately unsuitable mapping, in place of the generated one.
 	e.requireElasticsearch()
 	e.deleteIndex()
 	e.createIndexManually()
 	e.indexCreated = true
-
 	e.start()
-
-	// Refused: the index takes a plain date for this field, and this row has a time.
 	e.exec(`INSERT INTO orders (id,user_id,status,total_amount,placed_at)
 	        VALUES (25000,7,'paid',1.00,'2026-08-11 10:30:00.000')`)
-	// Accepted: the stream must carry on past the refusal.
 	e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (25001,7,'paid',1.00)")
-
 	e.waitForDocument("25001")
-
 	if _, found := e.document("25000"); found {
 		t.Fatal("the refused document was indexed after all, so this test proves nothing")
 	}
-
 	var recorded string
 	e.waitFor("the refused document to be recorded", func() bool {
 		entries, err := os.ReadDir(e.dlqDir)
@@ -1179,38 +957,30 @@ func TestRefusedDocumentGoesToTheDeadLetterQueueAndStreamContinues(t *testing.T)
 		recorded = string(body)
 		return strings.Contains(recorded, "25000")
 	})
-
 	if !strings.Contains(recorded, "\"status\":400") {
 		t.Errorf("expected the record to carry the refusal status:\n%s", recorded)
 	}
-	// The body is withheld unless asked for, since row values can hold personal data.
 	if strings.Contains(recorded, "\"body\":") {
 		t.Errorf("the document body should not be recorded by default:\n%s", recorded)
 	}
 }
 
-// chTable is this test's destination table.
 func (e *env) chTable() string { return "analytics." + e.index }
 
-// clickhouse sends a statement over the HTTP interface and returns the response body.
 func (e *env) clickhouse(statement string) string {
 	e.t.Helper()
-
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.chDSN, strings.NewReader(statement))
 	if err != nil {
 		e.t.Fatalf("build request: %v", err)
 	}
-
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		e.t.Fatalf("clickhouse %q: %v", firstLine(statement), err)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-
 	if resp.StatusCode >= 300 {
 		e.t.Fatalf("clickhouse %q: status %d: %s", firstLine(statement), resp.StatusCode, body)
 	}
@@ -1224,31 +994,23 @@ func firstLine(s string) string {
 	return s
 }
 
-// createClickHouseTable applies the DDL the binary generates, so the destination schema
-// cannot drift from what replication sends.
 func (e *env) createClickHouseTable(config string) {
 	e.t.Helper()
-
 	cmd := exec.Command(e.binary, "generate-schema", "-c", config, "--stream", e.streamName())
 	cmd.Dir = repoRoot(e.t)
 	ddl, err := cmd.Output()
 	if err != nil {
 		e.t.Fatalf("generate schema: %v", err)
 	}
-
 	e.clickhouse("DROP TABLE IF EXISTS " + e.chTable())
 	e.clickhouse(string(ddl))
 	e.t.Cleanup(func() { e.clickhouse("DROP TABLE IF EXISTS " + e.chTable()) })
 }
 
-// requireClickHouse skips when ClickHouse is not reachable, so the Elasticsearch
-// scenarios can still run on their own.
 func (e *env) requireClickHouse() {
 	e.t.Helper()
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.chDSN, strings.NewReader("SELECT 1"))
 	if err != nil {
 		e.t.Fatalf("build request: %v", err)
@@ -1264,21 +1026,16 @@ func (e *env) requireClickHouse() {
 	}
 }
 
-// startClickHouse launches the binary against ClickHouse.
 func (e *env) startClickHouse(snapshot bool) *process {
 	e.t.Helper()
 	e.requireClickHouse()
-
 	e.config = e.writeConfigFor(sinkClickHouse, snapshot)
 	e.createClickHouseTable(e.config)
 	return e.launch()
 }
 
-// chCount counts rows through FINAL, which is how a reader must query a
-// ReplacingMergeTree until background merges have collapsed duplicate versions.
 func (e *env) chCount(where string) int {
 	e.t.Helper()
-
 	body := e.clickhouse(fmt.Sprintf(
 		"SELECT count() FROM %s FINAL WHERE _is_deleted = 0 AND %s", e.chTable(), where))
 	n, err := strconv.Atoi(body)
@@ -1296,14 +1053,9 @@ func (e *env) chValue(query string) string {
 func TestClickHouseReceivesInsertsUpdatesAndDeletes(t *testing.T) {
 	e := setup(t)
 	e.startClickHouse(false)
-
 	e.exec(`INSERT INTO orders (id,user_id,status,channels,total_amount,is_gift,placed_at)
 	        VALUES (26000, 18446744073709551001, 'paid', 'web,ios', 19.90, 1, '2026-08-11 10:00:00.000')`)
-
 	e.waitFor("the row to arrive", func() bool { return e.chCount("id = 26000") == 1 })
-
-	// The same value decisions as the other destination, checked against a real server:
-	// an exact decimal, an enum label, a set as an array, an unsigned identifier.
 	row := e.chValue(fmt.Sprintf(
 		"SELECT toString(user_id), status, toString(total_amount), arrayStringConcat(channels, ',') "+
 			"FROM %s FINAL WHERE id = 26000 FORMAT TSV", e.chTable()))
@@ -1312,37 +1064,28 @@ func TestClickHouseReceivesInsertsUpdatesAndDeletes(t *testing.T) {
 			t.Errorf("expected %q in the stored row: %s", want, row)
 		}
 	}
-
 	e.exec("UPDATE orders SET status='shipped' WHERE id=26000")
 	e.waitFor("the update to win", func() bool {
 		return strings.Contains(e.chValue(fmt.Sprintf(
 			"SELECT status FROM %s FINAL WHERE id = 26000", e.chTable())), "shipped")
 	})
-	// The engine keeps one row per key, so an update must not leave two behind.
 	if got := e.chCount("id = 26000"); got != 1 {
 		t.Errorf("rows for the key = %d, want 1 after an update", got)
 	}
-
-	// A delete is a tombstone, and FINAL is what makes it disappear from reads.
 	e.exec("DELETE FROM orders WHERE id=26000")
 	e.waitFor("the delete to take effect", func() bool { return e.chCount("id = 26000") == 0 })
 }
 
 func TestClickHouseBackfillsPreexistingRows(t *testing.T) {
 	e := setup(t)
-
 	const firstID = 26100
 	for i := 0; i < 25; i++ {
 		e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (?,7,'paid',1.00)", firstID+i)
 	}
-
 	e.startClickHouse(true)
-
 	e.waitFor("the scan to deliver every row", func() bool {
 		return e.chCount(fmt.Sprintf("id BETWEEN %d AND %d", firstID, firstID+24)) == 25
 	})
-
-	// A change made after the scan must still be applied over the scanned copy.
 	e.exec("UPDATE orders SET status='cancelled' WHERE id=?", firstID)
 	e.waitFor("a later change to win over the scanned row", func() bool {
 		return strings.Contains(e.chValue(fmt.Sprintf(
@@ -1353,36 +1096,29 @@ func TestClickHouseBackfillsPreexistingRows(t *testing.T) {
 func TestClickHouseConvergesAfterAnAbruptKill(t *testing.T) {
 	e := setup(t)
 	p := e.startClickHouse(false)
-
 	const firstID = 26200
 	const rows = 200
 	for i := 0; i < rows; i++ {
 		e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (?,7,'paid',1.00)", firstID+i)
 	}
-
 	e.waitFor("some rows to arrive", func() bool {
 		return e.chCount(fmt.Sprintf("id BETWEEN %d AND %d", firstID, firstID+rows-1)) > 0
 	})
 	p.kill()
-
 	e.startClickHouse(false)
 	e.waitFor("every row to converge after the restart", func() bool {
 		return e.chCount(fmt.Sprintf("id BETWEEN %d AND %d", firstID, firstID+rows-1)) == rows
 	})
 }
 
-// countViaAlias counts documents through the read alias, which is what an application
-// queries and therefore what a rebuild must keep correct.
 func (e *env) countViaAlias(from, to uint64) int {
 	e.t.Helper()
-
 	e.esRequest(http.MethodPost, "/"+e.alias+"/_refresh", "")
 	query := fmt.Sprintf(`{"query":{"range":{"id":{"gte":%d,"lte":%d}}}}`, from, to)
 	status, payload := e.esRequest(http.MethodPost, "/"+e.alias+"/_count", query)
 	if status >= 300 {
 		e.t.Fatalf("count via alias: status %d: %s", status, payload)
 	}
-
 	var result struct{ Count int }
 	if err := json.Unmarshal([]byte(payload), &result); err != nil {
 		e.t.Fatalf("decode count: %v", err)
@@ -1390,17 +1126,12 @@ func (e *env) countViaAlias(from, to uint64) int {
 	return result.Count
 }
 
-// aliasTargets reports which indices the read alias resolves to.
-// indexSettings returns an index's declared settings, which is how a test sees what a scan
-// relaxed and whether it was put back.
 func (e *env) indexSettings(index string) map[string]any {
 	e.t.Helper()
-
 	status, payload := e.esRequest(http.MethodGet, "/"+index+"/_settings", "")
 	if status >= 300 {
 		e.t.Fatalf("read settings of %s: status %d: %s", index, status, payload)
 	}
-
 	var byIndex map[string]struct {
 		Settings struct {
 			Index map[string]any `json:"index"`
@@ -1418,7 +1149,6 @@ func (e *env) indexSettings(index string) map[string]any {
 
 func (e *env) aliasTargets() []string {
 	e.t.Helper()
-
 	status, payload := e.esRequest(http.MethodGet, "/_alias/"+e.alias, "")
 	if status == http.StatusNotFound {
 		return nil
@@ -1426,7 +1156,6 @@ func (e *env) aliasTargets() []string {
 	if status >= 300 {
 		e.t.Fatalf("read alias: status %d: %s", status, payload)
 	}
-
 	var byIndex map[string]any
 	if err := json.Unmarshal([]byte(payload), &byIndex); err != nil {
 		e.t.Fatalf("decode alias: %v", err)
@@ -1439,10 +1168,8 @@ func (e *env) aliasTargets() []string {
 	return targets
 }
 
-// resnapshot asks the stream to scan its table again.
 func (e *env) resnapshot() {
 	e.t.Helper()
-
 	out, err := exec.CommandContext(context.Background(), e.binary,
 		"resnapshot", "-c", e.config, "--stream", e.streamName(), "--confirm").CombinedOutput()
 	if err != nil {
@@ -1454,14 +1181,11 @@ func (e *env) resnapshot() {
 // must see a complete table throughout: never a partly built one, and never nothing.
 func TestRebuildFillsANewIndexAndMovesReaders(t *testing.T) {
 	e := setup(t)
-
 	const firstID = 27000
 	const rows = 40
 	for i := 0; i < rows; i++ {
 		e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (?,7,'paid',1.00)", firstID+i)
 	}
-
-	// First pass: fill the original index by scanning, and promote the alias to it.
 	first := e.startWithSnapshot()
 	e.waitFor("the original index to be filled", func() bool {
 		return e.countInRange(firstID, firstID+rows-1) == rows
@@ -1472,15 +1196,11 @@ func TestRebuildFillsANewIndexAndMovesReaders(t *testing.T) {
 	})
 	originalIndex := e.writeIndex
 	first.stop()
-
-	// A rebuild: a new index, a rescan, and the same alias.
 	e.resnapshot()
 	e.writeIndex = e.index + "_v2"
 	e.config = e.writeConfigWith(true)
 	e.createIndex()
-
 	e.launch()
-
 	e.waitFor("the new index to be filled", func() bool {
 		return e.countInRange(firstID, firstID+rows-1) == rows
 	})
@@ -1488,19 +1208,13 @@ func TestRebuildFillsANewIndexAndMovesReaders(t *testing.T) {
 		targets := e.aliasTargets()
 		return len(targets) == 1 && targets[0] == e.writeIndex
 	})
-
-	// Readers see the whole table through the alias, not a partial copy.
 	if got := e.countViaAlias(firstID, firstID+rows-1); got != rows {
 		t.Errorf("readers see %d of %d rows through the alias", got, rows)
 	}
-
-	// The previous index is still there, which is what makes the change reversible.
 	status, _ := e.esRequest(http.MethodGet, "/"+originalIndex, "")
 	if status >= 300 {
 		t.Errorf("the previous index was removed, leaving nothing to roll back to (status %d)", status)
 	}
-
-	// Changes made after the rebuild reach the new index.
 	e.exec("UPDATE orders SET status='shipped' WHERE id=?", firstID)
 	e.waitFor("a change after the rebuild to be applied", func() bool {
 		doc, found := e.document(fmt.Sprint(firstID))
@@ -1513,36 +1227,27 @@ func TestRebuildFillsANewIndexAndMovesReaders(t *testing.T) {
 // with nothing, and one with no replicas has no redundancy.
 func TestASnapshotRestoresTheSettingsItRelaxed(t *testing.T) {
 	e := setup(t)
-
 	const firstID = 28000
 	const rows = 40
 	for i := 0; i < rows; i++ {
 		e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (?,7,'paid',1.00)", firstID+i)
 	}
-
 	p := e.startWithSnapshot()
 	e.waitFor("the scan to fill the index", func() bool {
 		return e.countInRange(firstID, firstID+rows-1) == rows
 	})
-	// The alias moves only after a complete scan, so waiting for it is how the test knows
-	// the scan finished rather than merely produced enough rows.
 	e.waitFor("readers to be pointed at the scanned index", func() bool {
 		targets := e.aliasTargets()
 		return len(targets) == 1 && targets[0] == e.writeIndex
 	})
 	p.stop()
-
 	settings := e.indexSettings(e.writeIndex)
 	if got := settings["refresh_interval"]; got != nil {
 		t.Errorf("refresh_interval = %v, want it back to the cluster default the index was created with", got)
 	}
-	// The replica count is the index's own, and a scan has no business changing it.
 	if got := fmt.Sprint(settings["number_of_replicas"]); got != "0" {
 		t.Errorf("number_of_replicas = %v, want the 0 the index was created with", got)
 	}
-
-	// Searchable without the test forcing a refresh, which is what readers being moved
-	// to this index depends on.
 	e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (?,7,'paid',1.00)", firstID+rows)
 	e.start()
 	deadline := time.Now().Add(settleTimeout)
@@ -1561,14 +1266,11 @@ func TestASnapshotRestoresTheSettingsItRelaxed(t *testing.T) {
 // to that is any better.
 func TestAnInterruptedRebuildLeavesReadersOnTheOldIndex(t *testing.T) {
 	e := setup(t)
-
 	const firstID = 29000
 	const rows = 300
 	for i := 0; i < rows; i++ {
 		e.exec("INSERT INTO orders (id,user_id,status,total_amount) VALUES (?,7,'paid',1.00)", firstID+i)
 	}
-
-	// Fill the first index and put readers on it.
 	first := e.startWithSnapshot()
 	e.waitFor("the original index to be filled", func() bool {
 		return e.countInRange(firstID, firstID+rows-1) == rows
@@ -1579,24 +1281,15 @@ func TestAnInterruptedRebuildLeavesReadersOnTheOldIndex(t *testing.T) {
 	})
 	originalIndex := e.writeIndex
 	first.stop()
-
-	// Rebuild into a new index, and kill the process partway through the scan.
-	//
-	// Throttled, because an unthrottled scan of this table finishes in a few hundred
-	// milliseconds: the test would be racing it rather than interrupting it, and would
-	// report a failure of its own making.
 	e.resnapshot()
 	e.snapshotRate = 50
 	e.writeIndex = e.index + "_v2"
 	e.config = e.writeConfigWith(true)
 	e.createIndex()
-
 	rebuild := e.launchScanning()
 	interrupted := false
 	deadline := time.Now().Add(settleTimeout)
 	for time.Now().Before(deadline) && !interrupted {
-		// Counted through an explicit refresh, since the scan has refreshing turned off
-		// while it fills an index no reader is using.
 		e.refreshIndex(e.writeIndex)
 		if n := e.countInRange(firstID, firstID+rows-1); n > 0 && n < rows {
 			interrupted = true
@@ -1606,21 +1299,15 @@ func TestAnInterruptedRebuildLeavesReadersOnTheOldIndex(t *testing.T) {
 	}
 	rebuild.kill()
 	if !interrupted {
-		// Killing after the scan finished would prove nothing, so say so rather than
-		// reporting a pass or a misleading failure.
 		t.Fatalf("the scan never observed as partial, so the interruption this test needs did not happen:\n%s",
 			e.processLog())
 	}
-
-	// Readers are still on the complete index, not the partial one.
 	if targets := e.aliasTargets(); len(targets) != 1 || targets[0] != originalIndex {
 		t.Fatalf("readers are on %v, want them left on %s until the rebuild finished", targets, originalIndex)
 	}
 	if got := e.countViaAlias(firstID, firstID+rows-1); got != rows {
 		t.Errorf("readers see %d of %d rows through the alias during a rebuild", got, rows)
 	}
-
-	// Resuming finishes the rebuild and then, and only then, moves readers.
 	e.launchScanning()
 	e.waitFor("the rebuild to finish and readers to be moved", func() bool {
 		targets := e.aliasTargets()
@@ -1629,10 +1316,6 @@ func TestAnInterruptedRebuildLeavesReadersOnTheOldIndex(t *testing.T) {
 	if got := e.countViaAlias(firstID, firstID+rows-1); got != rows {
 		t.Errorf("readers see %d of %d rows after the rebuild finished", got, rows)
 	}
-
-	// The killed scan left refreshing off. Had the resumed scan taken that for the index's
-	// own setting, readers would now be pointed at an index that never refreshes, and this
-	// is the only place that shows it: every count above forces a refresh of its own.
 	if got := e.indexSettings(e.writeIndex)["refresh_interval"]; got != nil {
 		t.Errorf("refresh_interval = %v after the rebuild, want the cluster default", got)
 	}

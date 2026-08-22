@@ -18,8 +18,6 @@ func open(ctx context.Context, dsn string) (*sql.DB, error) {
 		return nil, fmt.Errorf("open mysql: %w", err)
 	}
 	db.SetMaxOpenConns(2)
-	// Ping under the caller's context so an unreachable host does not hang past
-	// an interrupt.
 	if err := db.PingContext(ctx); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("connect to mysql: %w", err)
@@ -44,22 +42,15 @@ func printReport(r preflight.Report) {
 	fmt.Println()
 }
 
-// splitHostPort separates a "host:port" address, defaulting the port and handling
-// bracketed IPv6 literals, where splitting on the first colon would truncate the
-// address.
 func splitHostPort(addr string) (string, uint16, error) {
 	if addr == "" {
 		return "", 0, errors.New("dsn has no server address")
 	}
-
 	host, portStr, err := net.SplitHostPort(addr)
 	if err != nil {
-		// No port present: treat the whole value as the host. Strip brackets so a
-		// bare IPv6 literal is usable.
 		host = strings.TrimSuffix(strings.TrimPrefix(addr, "["), "]")
 		return host, 3306, nil
 	}
-
 	port, err := strconv.ParseUint(portStr, 10, 16)
 	if err != nil {
 		return "", 0, fmt.Errorf("parse port in %q: %w", addr, err)

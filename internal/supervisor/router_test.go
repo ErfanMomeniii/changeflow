@@ -19,11 +19,9 @@ func TestRouterDeliversToTheStreamsWatchingATable(t *testing.T) {
 	items := make(chan cdc.ChangeEvent, 4)
 	router.Add("shop.orders", orders)
 	router.Add("shop.order_items", items)
-
 	if err := router.Route(context.Background(), cdc.ChangeEvent{Meta: meta("orders")}); err != nil {
 		t.Fatalf("route: %v", err)
 	}
-
 	if len(orders) != 1 {
 		t.Errorf("the watching stream received %d events, want 1", len(orders))
 	}
@@ -40,11 +38,9 @@ func TestRouterFansOutToEveryStreamOnATable(t *testing.T) {
 	second := make(chan cdc.ChangeEvent, 4)
 	router.Add("shop.orders", first)
 	router.Add("shop.orders", second)
-
 	if err := router.Route(context.Background(), cdc.ChangeEvent{Meta: meta("orders")}); err != nil {
 		t.Fatalf("route: %v", err)
 	}
-
 	if len(first) != 1 || len(second) != 1 {
 		t.Fatalf("each stream should receive a copy, got %d and %d", len(first), len(second))
 	}
@@ -54,7 +50,6 @@ func TestRouterIgnoresUnwatchedTables(t *testing.T) {
 	router := NewRouter()
 	orders := make(chan cdc.ChangeEvent, 4)
 	router.Add("shop.orders", orders)
-
 	if err := router.Route(context.Background(), cdc.ChangeEvent{Meta: meta("audit_log")}); err != nil {
 		t.Fatalf("route: %v", err)
 	}
@@ -67,7 +62,6 @@ func TestRouterMatchingIgnoresCase(t *testing.T) {
 	router := NewRouter()
 	orders := make(chan cdc.ChangeEvent, 4)
 	router.Add("SHOP.ORDERS", orders)
-
 	if err := router.Route(context.Background(), cdc.ChangeEvent{Meta: meta("orders")}); err != nil {
 		t.Fatalf("route: %v", err)
 	}
@@ -82,12 +76,10 @@ func TestRouterBlocksOnAFullQueueUntilCancelled(t *testing.T) {
 	router := NewRouter()
 	full := make(chan cdc.ChangeEvent, 1)
 	router.Add("shop.orders", full)
-
 	ctx, cancel := context.WithCancel(context.Background())
 	if err := router.Route(ctx, cdc.ChangeEvent{Meta: meta("orders")}); err != nil {
 		t.Fatalf("first route: %v", err)
 	}
-
 	cancel()
 	if err := router.Route(ctx, cdc.ChangeEvent{Meta: meta("orders")}); err == nil {
 		t.Fatal("expected routing into a full queue to report the cancellation")
@@ -100,11 +92,8 @@ func TestRouterClosesEveryChannelOnce(t *testing.T) {
 	second := make(chan cdc.ChangeEvent, 1)
 	router.Add("shop.orders", first)
 	router.Add("shop.order_items", second)
-
 	router.Close()
-	// Closing twice must not panic: the reader loop and a failure path can both reach it.
 	router.Close()
-
 	if _, open := <-first; open {
 		t.Error("first channel was not closed")
 	}
@@ -118,7 +107,6 @@ func TestRouterReportsItsTables(t *testing.T) {
 	router.Add("shop.orders", make(chan cdc.ChangeEvent, 1))
 	router.Add("shop.orders", make(chan cdc.ChangeEvent, 1))
 	router.Add("shop.order_items", make(chan cdc.ChangeEvent, 1))
-
 	tables := router.Tables()
 	if len(tables) != 2 {
 		t.Fatalf("expected 2 distinct tables, got %v", tables)
@@ -129,7 +117,6 @@ func TestRouterReportsItsTables(t *testing.T) {
 // would never receive what it still needs.
 func TestSharedStartPositionPicksThePositionCommonToAll(t *testing.T) {
 	const source = "ac8fec9f-9576-11f1-810c-16613dc98230"
-
 	got, err := sharedStartPosition(map[string]string{
 		"ahead":  source + ":1-100",
 		"behind": source + ":1-40",
@@ -145,7 +132,6 @@ func TestSharedStartPositionPicksThePositionCommonToAll(t *testing.T) {
 
 func TestSharedStartPositionWithOneStream(t *testing.T) {
 	const position = "ac8fec9f-9576-11f1-810c-16613dc98230:1-10"
-
 	got, err := sharedStartPosition(map[string]string{"only": position})
 	if err != nil {
 		t.Fatalf("shared position: %v", err)

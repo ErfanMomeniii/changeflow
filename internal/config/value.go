@@ -18,7 +18,6 @@ var byteUnits = []struct {
 	suffix string
 	factor uint64
 }{
-	// Longest suffixes first so "MiB" is not matched as "B".
 	{"KIB", 1 << 10},
 	{"MIB", 1 << 20},
 	{"GIB", 1 << 30},
@@ -34,7 +33,6 @@ var byteUnits = []struct {
 func (b *ByteSize) UnmarshalYAML(unmarshal func(any) error) error {
 	var raw string
 	if err := unmarshal(&raw); err != nil {
-		// Allow a plain integer node as well as a quoted string.
 		var n uint64
 		if err2 := unmarshal(&n); err2 != nil {
 			return fmt.Errorf("size must be a string like \"5MiB\" or a byte count: %w", err)
@@ -42,7 +40,6 @@ func (b *ByteSize) UnmarshalYAML(unmarshal func(any) error) error {
 		*b = ByteSize(n)
 		return nil
 	}
-
 	size, err := ParseByteSize(raw)
 	if err != nil {
 		return err
@@ -57,7 +54,6 @@ func ParseByteSize(raw string) (ByteSize, error) {
 	if s == "" {
 		return 0, fmt.Errorf("size is empty; write something like \"5MiB\"")
 	}
-
 	factor := uint64(1)
 	for _, u := range byteUnits {
 		if strings.HasSuffix(s, u.suffix) {
@@ -69,8 +65,6 @@ func ParseByteSize(raw string) (ByteSize, error) {
 	if s == "" {
 		return 0, fmt.Errorf("size %q has a unit but no number", raw)
 	}
-
-	// Only whole numbers: a fractional size would round in a way nobody asked for.
 	n, err := strconv.ParseUint(s, 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("size %q is not a whole number of bytes with an optional unit (KiB, MiB, GiB, KB, MB, GB)", raw)
@@ -116,7 +110,6 @@ func (d *Duration) UnmarshalYAML(unmarshal func(any) error) error {
 	if err := unmarshal(&raw); err != nil {
 		return fmt.Errorf("duration must be a string like \"500ms\" or \"2s\": %w", err)
 	}
-
 	parsed, err := ParseDuration(raw)
 	if err != nil {
 		return err
@@ -135,7 +128,6 @@ func ParseDuration(raw string) (time.Duration, error) {
 	if _, err := strconv.ParseFloat(s, 64); err == nil {
 		return 0, fmt.Errorf("duration %q needs a unit, for example %qs or %qms", raw, s, s)
 	}
-
 	parsed, err := time.ParseDuration(s)
 	if err != nil {
 		return 0, fmt.Errorf("duration %q is not valid; use forms like \"500ms\", \"2s\", \"1m30s\"", raw)

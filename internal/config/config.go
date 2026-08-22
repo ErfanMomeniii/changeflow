@@ -1,10 +1,3 @@
-// Package config loads and validates changeflow's configuration.
-//
-// Validation is deliberately strict and exhaustive: an unknown field is an error
-// rather than a setting silently ignored, and every problem in a file is reported
-// at once so fixing a config is not a guessing game. Anything that can be checked
-// before connecting is checked here, because the alternative is discovering it
-// after several hundred thousand documents have been written.
 package config
 
 import (
@@ -43,12 +36,8 @@ type Config struct {
 
 // Source describes the MySQL server to replicate from.
 type Source struct {
-	DSN string `yaml:"dsn"`
-	// ServerID identifies us to the master as a replica, and must not collide with
-	// any other replica or with the master itself.
-	ServerID uint32 `yaml:"server_id"`
-	// SnapshotDSN optionally points table scans at a different server, so a
-	// backfill can read from a replica while the binlog comes from the master.
+	DSN             string   `yaml:"dsn"`
+	ServerID        uint32   `yaml:"server_id"`
 	SnapshotDSN     string   `yaml:"snapshot_dsn"`
 	TimeZone        string   `yaml:"time_zone"`
 	HeartbeatPeriod Duration `yaml:"heartbeat_period"`
@@ -64,26 +53,16 @@ type CheckpointStore struct {
 
 // Runtime holds process-wide settings.
 type Runtime struct {
-	// BufferSizeRaw is nil when omitted, which is how an explicit zero stays
-	// distinguishable from an absent value and can be reported as a mistake.
-	BufferSizeRaw *int     `yaml:"buffer_size"`
-	ShutdownGrace Duration `yaml:"shutdown_grace"`
-	// MetricsAddr is where metrics and health are served. The value "off" disables
-	// them, which an empty value cannot express because it takes the default.
-	MetricsAddr string `yaml:"metrics_addr"`
-	// AssumedRowBytes is the per-row estimate the memory projection uses, for tables
-	// whose rows are much larger or smaller than typical.
+	BufferSizeRaw   *int     `yaml:"buffer_size"`
+	ShutdownGrace   Duration `yaml:"shutdown_grace"`
+	MetricsAddr     string   `yaml:"metrics_addr"`
 	AssumedRowBytes ByteSize `yaml:"assumed_row_bytes"`
-
-	// BufferSize is the resolved value, filled once defaults are applied.
-	BufferSize int `yaml:"-"`
+	BufferSize      int      `yaml:"-"`
 }
 
 // Stream is one table-to-sink route.
 type Stream struct {
-	// Name comes from the map key, not the file body.
-	Name string `yaml:"-"`
-
+	Name     string   `yaml:"-"`
 	Table    string   `yaml:"table"`
 	Snapshot Snapshot `yaml:"snapshot"`
 	Batch    Batch    `yaml:"batch"`
@@ -93,15 +72,12 @@ type Stream struct {
 
 // Snapshot controls the one-time backfill of rows that already exist.
 type Snapshot struct {
-	// Snapshots are on unless switched off, so presence has to be tracked: a plain
-	// bool defaulting to true could never express "enabled: false".
 	EnabledRaw           *bool `yaml:"enabled"`
 	ChunkSizeRaw         *int  `yaml:"chunk_size"`
 	MaxRateRowsPerSecRaw *int  `yaml:"max_rate_rows_per_sec"`
-	// Resolved values, filled once defaults are applied.
-	Enabled           bool `yaml:"-"`
-	ChunkSize         int  `yaml:"-"`
-	MaxRateRowsPerSec int  `yaml:"-"`
+	Enabled              bool  `yaml:"-"`
+	ChunkSize            int   `yaml:"-"`
+	MaxRateRowsPerSec    int   `yaml:"-"`
 }
 
 // Batch controls how writes are grouped.
@@ -109,28 +85,20 @@ type Batch struct {
 	MaxRowsRaw    *int      `yaml:"max_rows"`
 	MaxBytesRaw   *ByteSize `yaml:"max_bytes"`
 	FlushInterval Duration  `yaml:"flush_interval"`
-
-	// Resolved values, filled once defaults are applied.
-	MaxRows  int      `yaml:"-"`
-	MaxBytes ByteSize `yaml:"-"`
+	MaxRows       int       `yaml:"-"`
+	MaxBytes      ByteSize  `yaml:"-"`
 }
 
 // Sink describes a destination.
 type Sink struct {
-	Type       string `yaml:"type"`
-	WorkersRaw *int   `yaml:"workers"`
-
-	// Workers is the resolved value, filled once defaults are applied.
-	Workers int `yaml:"-"`
-
-	// Elasticsearch
-	Addresses []string `yaml:"addresses"`
-	Index     string   `yaml:"index"`
-	Alias     string   `yaml:"alias"`
-
-	// ClickHouse
-	DSN   string `yaml:"dsn"`
-	Table string `yaml:"table"`
+	Type       string   `yaml:"type"`
+	WorkersRaw *int     `yaml:"workers"`
+	Workers    int      `yaml:"-"`
+	Addresses  []string `yaml:"addresses"`
+	Index      string   `yaml:"index"`
+	Alias      string   `yaml:"alias"`
+	DSN        string   `yaml:"dsn"`
+	Table      string   `yaml:"table"`
 }
 
 // Mapping selects and reshapes the columns a stream writes.
@@ -164,23 +132,18 @@ func Parse(raw []byte, lookup func(string) (string, bool)) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	var cfg Config
 	dec := yaml.NewDecoder(bytes.NewReader(expanded))
-	// Reject fields the struct does not define, so a typo cannot masquerade as a
-	// setting that took effect.
 	dec.KnownFields(true)
 	if err := dec.Decode(&cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
-
 	for name, s := range cfg.Streams {
 		if s == nil {
 			return nil, fmt.Errorf("stream %q has no body", name)
 		}
 		s.Name = name
 	}
-
 	cfg.applyDefaults()
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -188,17 +151,12 @@ func Parse(raw []byte, lookup func(string) (string, bool)) (*Config, error) {
 	return &cfg, nil
 }
 
-// expandEnv replaces ${VAR} and ${VAR:-default}. An unset variable with no
-// default is an error naming it: substituting an empty string would produce a
-// config that looks valid and then fails to connect.
 func expandEnv(raw []byte, lookup func(string) (string, bool)) ([]byte, error) {
 	var missing []string
-
 	out := envRefPattern.ReplaceAllFunc(raw, func(match []byte) []byte {
 		groups := envRefPattern.FindSubmatch(match)
 		name := string(groups[1])
 		hasDefault := len(groups[2]) > 0
-
 		if v, ok := lookup(name); ok {
 			return []byte(v)
 		}
@@ -208,7 +166,6 @@ func expandEnv(raw []byte, lookup func(string) (string, bool)) ([]byte, error) {
 		missing = append(missing, name)
 		return match
 	})
-
 	if len(missing) > 0 {
 		sort.Strings(missing)
 		return nil, fmt.Errorf("unset environment variable(s): %s", strings.Join(dedupe(missing), ", "))
@@ -233,16 +190,13 @@ func (c *Config) applyDefaults() {
 	setString(&c.Source.TLS, "preferred")
 	setDuration(&c.Source.HeartbeatPeriod, 5*time.Second)
 	setDuration(&c.Source.ReadTimeout, 90*time.Second)
-
 	setString(&c.Checkpoint.Table, "changeflow_checkpoints")
-
 	c.Runtime.BufferSize = intOr(c.Runtime.BufferSizeRaw, 8192)
 	setDuration(&c.Runtime.ShutdownGrace, 30*time.Second)
 	setString(&c.Runtime.MetricsAddr, "127.0.0.1:9187")
 	if c.Runtime.AssumedRowBytes == 0 {
 		c.Runtime.AssumedRowBytes = 1 << 10
 	}
-
 	for _, s := range c.Streams {
 		s.Batch.MaxRows = intOr(s.Batch.MaxRowsRaw, 1000)
 		s.Batch.MaxBytes = 5 << 20
@@ -250,20 +204,16 @@ func (c *Config) applyDefaults() {
 			s.Batch.MaxBytes = *s.Batch.MaxBytesRaw
 		}
 		setDuration(&s.Batch.FlushInterval, 500*time.Millisecond)
-
 		s.Sink.Workers = intOr(s.Sink.WorkersRaw, 4)
 		s.Snapshot.Enabled = s.Snapshot.EnabledRaw == nil || *s.Snapshot.EnabledRaw
 		s.Snapshot.ChunkSize = intOr(s.Snapshot.ChunkSizeRaw, 5000)
 		s.Snapshot.MaxRateRowsPerSec = intOr(s.Snapshot.MaxRateRowsPerSecRaw, 20000)
-
 		if s.Mapping.OnZeroDate == "" {
 			s.Mapping.OnZeroDate = "null"
 		}
 	}
 }
 
-// intOr resolves an optional setting, so an omitted value takes the default while
-// an explicit one is kept even when it is invalid and needs reporting.
 func intOr(raw *int, def int) int {
 	if raw == nil {
 		return def
@@ -289,7 +239,6 @@ func (c *Config) Validate() error {
 	add := func(format string, args ...any) {
 		problems = append(problems, fmt.Errorf(format, args...))
 	}
-
 	if c.Source.DSN == "" {
 		add("source.dsn is required")
 	}
@@ -305,20 +254,17 @@ func (c *Config) Validate() error {
 	if c.Runtime.BufferSize < 1 {
 		add("runtime.buffer_size must be at least 1, got %d", c.Runtime.BufferSize)
 	}
-
 	if len(c.Streams) == 0 {
 		add("streams must define at least one stream")
 	}
 	for _, name := range c.StreamNames() {
 		c.Streams[name].validate(name, add)
 	}
-
 	return errors.Join(problems...)
 }
 
 func (s *Stream) validate(name string, add func(string, ...any)) {
 	path := "streams." + name
-
 	switch {
 	case name == "":
 		add("streams has an empty stream name")
@@ -327,11 +273,9 @@ func (s *Stream) validate(name string, add func(string, ...any)) {
 	case !streamNamePattern.MatchString(name):
 		add("%s: stream name may contain only letters, digits, and underscore", path)
 	}
-
 	if s.Schema() == "" || s.TableName() == "" {
 		add("%s.table must be written as database.table, got %q", path, s.Table)
 	}
-
 	if s.Batch.MaxRows < 1 {
 		add("%s.batch.max_rows must be at least 1", path)
 	}
@@ -344,10 +288,8 @@ func (s *Stream) validate(name string, add func(string, ...any)) {
 	if s.Snapshot.ChunkSize < 1 {
 		add("%s.snapshot.chunk_size must be at least 1", path)
 	}
-
 	s.Sink.validate(path+".sink", add)
 	s.Mapping.validate(path+".mapping", add)
-
 	switch s.Mapping.OnZeroDate {
 	case "null", "error", "epoch":
 	default:
@@ -364,15 +306,12 @@ func (k *Sink) validate(path string, add func(string, ...any)) {
 		if k.Index == "" {
 			add("%s.index is required for an elasticsearch sink", path)
 		}
-		// Options belonging to another sink type are almost certainly a mistake,
-		// and ignoring them silently hides it.
 		if k.DSN != "" {
 			add("%s.dsn does not apply to an elasticsearch sink", path)
 		}
 		if k.Table != "" {
 			add("%s.table does not apply to an elasticsearch sink; use index", path)
 		}
-
 	case SinkClickHouse:
 		if k.DSN == "" {
 			add("%s.dsn is required for a clickhouse sink", path)
@@ -389,7 +328,6 @@ func (k *Sink) validate(path string, add func(string, ...any)) {
 		if k.Alias != "" {
 			add("%s.alias does not apply to a clickhouse sink", path)
 		}
-
 	case "":
 		add("%s.type is required (%s or %s)", path, SinkElasticsearch, SinkClickHouse)
 	default:
@@ -401,9 +339,6 @@ func (m *Mapping) validate(path string, add func(string, ...any)) {
 	if len(m.Include) > 0 && len(m.Exclude) > 0 {
 		add("%s: include and exclude cannot both be set; choose one", path)
 	}
-
-	// A rename that lands on a name already in use would drop a field without
-	// saying so.
 	targets := make(map[string]string, len(m.Rename))
 	for from, to := range m.Rename {
 		if to == "" {

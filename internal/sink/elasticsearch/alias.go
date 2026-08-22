@@ -20,7 +20,6 @@ func (s *Sink) PromoteAlias(ctx context.Context) error {
 	if s.opts.Alias == s.opts.Index {
 		return fmt.Errorf("elasticsearch: alias %q is also the index name; readers and writers need separate names for a rebuild to be possible", s.opts.Alias)
 	}
-
 	current, err := s.aliasTargets(ctx)
 	if err != nil {
 		return err
@@ -28,7 +27,6 @@ func (s *Sink) PromoteAlias(ctx context.Context) error {
 	if len(current) == 1 && current[0] == s.opts.Index {
 		return nil
 	}
-
 	actions := make([]map[string]any, 0, len(current)+1)
 	for _, index := range current {
 		if index == s.opts.Index {
@@ -41,12 +39,10 @@ func (s *Sink) PromoteAlias(ctx context.Context) error {
 	actions = append(actions, map[string]any{
 		"add": map[string]any{"index": s.opts.Index, "alias": s.opts.Alias, "is_write_index": true},
 	})
-
 	body, err := json.Marshal(map[string]any{"actions": actions})
 	if err != nil {
 		return fmt.Errorf("elasticsearch: encode alias actions: %w", err)
 	}
-
 	status, payload, err := s.do(ctx, http.MethodPost, "/_aliases", body)
 	if err != nil {
 		return fmt.Errorf("elasticsearch: move alias %s: %w", s.opts.Alias, err)
@@ -68,25 +64,20 @@ func (s *Sink) aliasTargets(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("elasticsearch: read alias %s: %w", s.opts.Alias, err)
 	}
-
 	switch {
 	case status == http.StatusNotFound:
-		// No alias yet, which is the first-run case.
 		return nil, nil
 	case status >= 300:
 		return nil, fmt.Errorf("elasticsearch: read alias %s: status %d: %s", s.opts.Alias, status, snippet(payload))
 	}
-
 	var byIndex map[string]any
 	if err := json.Unmarshal(payload, &byIndex); err != nil {
 		return nil, fmt.Errorf("elasticsearch: cannot read alias %s: %w", s.opts.Alias, err)
 	}
-
 	targets := make([]string, 0, len(byIndex))
 	for index := range byIndex {
 		targets = append(targets, index)
 	}
-	// Sorted, so logs and errors read the same way between runs.
 	sort.Strings(targets)
 	return targets, nil
 }

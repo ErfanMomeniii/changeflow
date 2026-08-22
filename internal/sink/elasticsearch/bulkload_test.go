@@ -10,30 +10,20 @@ import (
 	"testing"
 )
 
-// settingsServer answers settings reads with a fixed body and records what it is asked to
-// change.
 type settingsServer struct {
-	mu sync.Mutex
-	// declared is the index block a read returns, so a test can present an index that
-	// declares its own settings or one that leaves them at the cluster default.
-	declared string
-	// applied is every settings body received, in order.
-	applied []string
-	// refreshed and merged record the maintenance calls.
-	refreshed, merged int
-	// readStatus and writeStatus force failures.
+	mu                      sync.Mutex
+	declared                string
+	applied                 []string
+	refreshed, merged       int
 	readStatus, writeStatus int
-	// mergeStatus forces a merge failure, which must not be fatal to the caller.
-	mergeStatus int
+	mergeStatus             int
 }
 
 func (f *settingsServer) sink(t *testing.T) *Sink {
 	t.Helper()
-
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
-
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/_settings"):
 			if f.readStatus != 0 {
@@ -42,7 +32,6 @@ func (f *settingsServer) sink(t *testing.T) *Sink {
 				return
 			}
 			_, _ = w.Write([]byte(`{"orders-v2":{"settings":{"index":{` + f.declared + `}}}}`))
-
 		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/_settings"):
 			body, _ := io.ReadAll(r.Body)
 			f.applied = append(f.applied, string(body))
@@ -52,11 +41,9 @@ func (f *settingsServer) sink(t *testing.T) *Sink {
 				return
 			}
 			_, _ = w.Write([]byte(`{"acknowledged":true}`))
-
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/_refresh"):
 			f.refreshed++
 			_, _ = w.Write([]byte(`{"_shards":{"total":1,"successful":1,"failed":0}}`))
-
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/_forcemerge"):
 			f.merged++
 			if f.mergeStatus != 0 {
@@ -65,13 +52,11 @@ func (f *settingsServer) sink(t *testing.T) *Sink {
 				return
 			}
 			_, _ = w.Write([]byte(`{"_shards":{"total":1,"successful":1,"failed":0}}`))
-
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
 	t.Cleanup(server.Close)
-
 	s, err := New(Options{Addresses: []string{server.URL}, Index: "orders-v2", Alias: "orders"})
 	if err != nil {
 		t.Fatalf("new sink: %v", err)
@@ -91,7 +76,6 @@ func (f *settingsServer) recorded() ([]string, int, int) {
 func TestBulkLoadTurnsOffRefreshing(t *testing.T) {
 	server := &settingsServer{declared: `"refresh_interval":"5s","number_of_replicas":"2"`}
 	s := server.sink(t)
-
 	load, err := s.BeginBulkLoad(context.Background())
 	if err != nil {
 		t.Fatalf("begin: %v", err)
@@ -99,7 +83,6 @@ func TestBulkLoadTurnsOffRefreshing(t *testing.T) {
 	if !load.Applied() {
 		t.Fatal("the settings were reported as unchanged")
 	}
-
 	applied, _, _ := server.recorded()
 	if len(applied) != 1 {
 		t.Fatalf("expected one settings change, got %d: %v", len(applied), applied)
@@ -107,8 +90,6 @@ func TestBulkLoadTurnsOffRefreshing(t *testing.T) {
 	if !strings.Contains(applied[0], `"refresh_interval":"-1"`) {
 		t.Errorf("refreshing was not turned off: %s", applied[0])
 	}
-	// The replica count is left alone: a scan killed partway through would leave no way
-	// to tell an index that declares no replicas from one that had them taken away.
 	if strings.Contains(applied[0], "number_of_replicas") {
 		t.Errorf("the replica count should not be touched: %s", applied[0])
 	}
@@ -119,7 +100,6 @@ func TestBulkLoadTurnsOffRefreshing(t *testing.T) {
 func TestBulkLoadRestoresWhatItReplaced(t *testing.T) {
 	server := &settingsServer{declared: `"refresh_interval":"5s","number_of_replicas":"2"`}
 	s := server.sink(t)
-
 	load, err := s.BeginBulkLoad(context.Background())
 	if err != nil {
 		t.Fatalf("begin: %v", err)
@@ -127,7 +107,6 @@ func TestBulkLoadRestoresWhatItReplaced(t *testing.T) {
 	if err := s.EndBulkLoad(context.Background(), load); err != nil {
 		t.Fatalf("end: %v", err)
 	}
-
 	applied, refreshed, _ := server.recorded()
 	if len(applied) != 2 {
 		t.Fatalf("expected the settings to be changed and restored, got %d changes: %v", len(applied), applied)
@@ -135,8 +114,6 @@ func TestBulkLoadRestoresWhatItReplaced(t *testing.T) {
 	if !strings.Contains(applied[1], `"refresh_interval":"5s"`) {
 		t.Errorf("the refresh interval was not restored: %s", applied[1])
 	}
-	// Nothing written while refreshing was off is searchable until a refresh, so readers
-	// moved to this index immediately afterwards would find it empty.
 	if refreshed != 1 {
 		t.Errorf("the index was refreshed %d times, want once so the scanned rows are visible", refreshed)
 	}
@@ -147,7 +124,6 @@ func TestBulkLoadRestoresWhatItReplaced(t *testing.T) {
 func TestBulkLoadClearsSettingsTheIndexNeverDeclared(t *testing.T) {
 	server := &settingsServer{declared: `"number_of_shards":"1"`}
 	s := server.sink(t)
-
 	load, err := s.BeginBulkLoad(context.Background())
 	if err != nil {
 		t.Fatalf("begin: %v", err)
@@ -155,7 +131,6 @@ func TestBulkLoadClearsSettingsTheIndexNeverDeclared(t *testing.T) {
 	if err := s.EndBulkLoad(context.Background(), load); err != nil {
 		t.Fatalf("end: %v", err)
 	}
-
 	applied, _, _ := server.recorded()
 	if got := applied[1]; !strings.Contains(got, `"refresh_interval":null`) {
 		t.Errorf("expected the override to be cleared, got %s", got)
@@ -168,7 +143,6 @@ func TestBulkLoadClearsSettingsTheIndexNeverDeclared(t *testing.T) {
 func TestBulkLoadTreatsRefreshingAlreadyOffAsLeftBehind(t *testing.T) {
 	server := &settingsServer{declared: `"refresh_interval":"-1","number_of_replicas":"0"`}
 	s := server.sink(t)
-
 	load, err := s.BeginBulkLoad(context.Background())
 	if err != nil {
 		t.Fatalf("begin: %v", err)
@@ -176,7 +150,6 @@ func TestBulkLoadTreatsRefreshingAlreadyOffAsLeftBehind(t *testing.T) {
 	if err := s.EndBulkLoad(context.Background(), load); err != nil {
 		t.Fatalf("end: %v", err)
 	}
-
 	applied, refreshed, _ := server.recorded()
 	if got := applied[1]; !strings.Contains(got, `"refresh_interval":null`) {
 		t.Errorf("restored to %s, want the cluster default rather than the value a killed scan left", got)
@@ -190,11 +163,9 @@ func TestBulkLoadTreatsRefreshingAlreadyOffAsLeftBehind(t *testing.T) {
 func TestEndBulkLoadDoesNothingWhenNothingWasApplied(t *testing.T) {
 	server := &settingsServer{declared: `"refresh_interval":"5s"`}
 	s := server.sink(t)
-
 	if err := s.EndBulkLoad(context.Background(), LoadSettings{}); err != nil {
 		t.Fatalf("end: %v", err)
 	}
-
 	applied, refreshed, _ := server.recorded()
 	if len(applied) != 0 || refreshed != 0 {
 		t.Errorf("expected no requests, got %v and %d refreshes", applied, refreshed)
@@ -204,12 +175,10 @@ func TestEndBulkLoadDoesNothingWhenNothingWasApplied(t *testing.T) {
 func TestBulkLoadReportsAFailureToRead(t *testing.T) {
 	server := &settingsServer{readStatus: http.StatusNotFound}
 	s := server.sink(t)
-
 	load, err := s.BeginBulkLoad(context.Background())
 	if err == nil {
 		t.Fatal("expected an error when the settings cannot be read")
 	}
-	// The caller has to be able to tell that nothing needs restoring.
 	if load.Applied() {
 		t.Error("a failed start reported that it had changed settings")
 	}
@@ -218,7 +187,6 @@ func TestBulkLoadReportsAFailureToRead(t *testing.T) {
 func TestBulkLoadReportsAFailureToApply(t *testing.T) {
 	server := &settingsServer{declared: `"refresh_interval":"5s"`, writeStatus: http.StatusBadRequest}
 	s := server.sink(t)
-
 	load, err := s.BeginBulkLoad(context.Background())
 	if err == nil {
 		t.Fatal("expected an error when the settings cannot be changed")
@@ -234,7 +202,6 @@ func TestBulkLoadReportsAFailureToApply(t *testing.T) {
 func TestForceMergeAsksForASingleSegment(t *testing.T) {
 	server := &settingsServer{declared: `"refresh_interval":"5s"`}
 	s := server.sink(t)
-
 	if err := s.ForceMerge(context.Background()); err != nil {
 		t.Fatalf("merge: %v", err)
 	}
@@ -248,7 +215,6 @@ func TestForceMergeAsksForASingleSegment(t *testing.T) {
 func TestForceMergeReportsAFailure(t *testing.T) {
 	server := &settingsServer{declared: `"refresh_interval":"5s"`, mergeStatus: http.StatusTooManyRequests}
 	s := server.sink(t)
-
 	if err := s.ForceMerge(context.Background()); err == nil {
 		t.Fatal("expected an error when the merge is refused")
 	}

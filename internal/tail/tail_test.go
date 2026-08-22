@@ -8,7 +8,6 @@ import (
 
 func TestEnumLabelResolvesOneBasedIndex(t *testing.T) {
 	labels := []string{"draft", "paid", "shipped", "cancelled"}
-
 	for _, tc := range []struct {
 		name  string
 		value any
@@ -35,7 +34,6 @@ func TestEnumLabelResolvesOneBasedIndex(t *testing.T) {
 
 func TestEnumLabelRefusesUnresolvableValues(t *testing.T) {
 	labels := []string{"draft", "paid"}
-
 	for _, tc := range []struct {
 		name  string
 		value any
@@ -62,7 +60,6 @@ func TestEnumLabelWithoutLabelsDoesNotGuess(t *testing.T) {
 
 func TestSetLabelsExpandsBitmask(t *testing.T) {
 	labels := []string{"web", "ios", "android", "pos"}
-
 	for _, tc := range []struct {
 		name  string
 		value any
@@ -111,10 +108,8 @@ func TestFormatScalarValues(t *testing.T) {
 		want  string
 	}{
 		{"null", nil, "NULL"},
-		// Printed exactly, not as a float: 19.90 must not become 19.899999...
 		{"exact decimal", decimal.RequireFromString("19.90"), "19.90"},
 		{"decimal with many places", decimal.RequireFromString("0.0000000001"), "0.0000000001"},
-		// Above 2^63, where a signed read would report a negative number.
 		{"unsigned bigint beyond int64", uint64(18446744073709551000), "18446744073709551000"},
 		{"utf8 bytes as text", []byte("café"), "café"},
 		{"binary bytes as hex", []byte{0x00, 0xff, 0x10}, "0x00ff10"},
@@ -131,7 +126,6 @@ func TestFormatScalarValues(t *testing.T) {
 
 func TestParseFiltersIsCaseInsensitive(t *testing.T) {
 	f := parseFilters([]string{"Shop.Orders"})
-
 	if !f["shop.orders"] {
 		t.Fatalf("expected filter to be lowercased, got %v", f)
 	}
@@ -156,7 +150,6 @@ func TestTrackedRespectsFilters(t *testing.T) {
 	if !watched.tracked("SHOP", "ORDERS") {
 		t.Error("expected table matching to ignore case")
 	}
-
 	all := &tailer{want: nil}
 	if !all.tracked("anything", "at_all") {
 		t.Error("expected every table to be tracked when no filter is set")
@@ -175,8 +168,7 @@ func TestCollapseFlattensWhitespace(t *testing.T) {
 // verbatim produces mojibake, so it must be shown as hex until something knows
 // the column's charset and can convert it.
 func TestFormatScalarHexEncodesNonUTF8Strings(t *testing.T) {
-	latin1Cafe := string([]byte{0x63, 0x61, 0x66, 0xE9}) // "café" in latin1
-
+	latin1Cafe := string([]byte{0x63, 0x61, 0x66, 0xE9})
 	if got := formatScalar(latin1Cafe); got != "0x636166e9" {
 		t.Fatalf("got %q, want 0x636166e9", got)
 	}

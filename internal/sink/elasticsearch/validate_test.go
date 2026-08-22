@@ -8,10 +8,8 @@ import (
 	"testing"
 )
 
-// mappingServer replies to a mapping request with the given index body.
 func mappingServer(t *testing.T, status int, body string) *Sink {
 	t.Helper()
-
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(r.URL.Path, "/_mapping") {
 			w.WriteHeader(http.StatusNotFound)
@@ -22,7 +20,6 @@ func mappingServer(t *testing.T, status int, body string) *Sink {
 		_, _ = w.Write([]byte(body))
 	}))
 	t.Cleanup(server.Close)
-
 	s, err := New(Options{Addresses: []string{server.URL}, Index: "orders-v1"})
 	if err != nil {
 		t.Fatalf("new sink: %v", err)
@@ -43,7 +40,6 @@ func TestValidateAcceptsAMatchingMapping(t *testing.T) {
 		"placed_at":    {"type":"date"},
 		"metadata":     {"type":"object","enabled":false}
 	`))
-
 	err := s.ValidateMapping(context.Background(), map[string]string{
 		"id": "unsigned_long", "status": "keyword", "total_amount": "keyword",
 		"placed_at": "date", "metadata": "object",
@@ -57,7 +53,6 @@ func TestValidateAcceptsAMatchingMapping(t *testing.T) {
 // a guessed type. Both are worth refusing to start over.
 func TestValidateReportsMissingFields(t *testing.T) {
 	s := mappingServer(t, http.StatusOK, mappingBody(`"id": {"type":"unsigned_long"}`))
-
 	err := s.ValidateMapping(context.Background(), map[string]string{
 		"id": "unsigned_long", "status": "keyword", "total_amount": "keyword",
 	})
@@ -75,7 +70,6 @@ func TestValidateReportsMissingFields(t *testing.T) {
 // range, and the write would succeed while wrapping the value.
 func TestValidateRefusesASignedLongForAnUnsignedField(t *testing.T) {
 	s := mappingServer(t, http.StatusOK, mappingBody(`"id": {"type":"long"}`))
-
 	err := s.ValidateMapping(context.Background(), map[string]string{"id": "unsigned_long"})
 	if err == nil {
 		t.Fatal("expected long to be refused where unsigned_long is required")
@@ -87,7 +81,6 @@ func TestValidateRefusesASignedLongForAnUnsignedField(t *testing.T) {
 
 func TestValidateReportsATypeMismatch(t *testing.T) {
 	s := mappingServer(t, http.StatusOK, mappingBody(`"total_amount": {"type":"double"}`))
-
 	err := s.ValidateMapping(context.Background(), map[string]string{"total_amount": "keyword"})
 	if err == nil {
 		t.Fatal("expected a double to be refused where an exact keyword is required")
@@ -100,7 +93,6 @@ func TestValidateAcceptsAMultiFieldKeyword(t *testing.T) {
 	s := mappingServer(t, http.StatusOK, mappingBody(`
 		"status": {"type":"text","fields":{"keyword":{"type":"keyword"}}}
 	`))
-
 	if err := s.ValidateMapping(context.Background(), map[string]string{"status": "keyword"}); err != nil {
 		t.Fatalf("expected a text field with a keyword sibling to be accepted: %v", err)
 	}
@@ -108,7 +100,6 @@ func TestValidateAcceptsAMultiFieldKeyword(t *testing.T) {
 
 func TestValidateRefusesTextWithoutAKeywordSibling(t *testing.T) {
 	s := mappingServer(t, http.StatusOK, mappingBody(`"status": {"type":"text"}`))
-
 	if err := s.ValidateMapping(context.Background(), map[string]string{"status": "keyword"}); err == nil {
 		t.Fatal("expected plain text to be refused where an exact value is required")
 	}
@@ -158,7 +149,6 @@ func TestValidateIgnoresExtraFieldsInTheIndex(t *testing.T) {
 		"legacy":    {"type":"keyword"},
 		"computed":  {"type":"double"}
 	`))
-
 	if err := s.ValidateMapping(context.Background(), map[string]string{"id": "unsigned_long"}); err != nil {
 		t.Fatalf("extra fields should not fail validation: %v", err)
 	}
@@ -166,7 +156,6 @@ func TestValidateIgnoresExtraFieldsInTheIndex(t *testing.T) {
 
 func TestValidateReportsAMissingIndexClearly(t *testing.T) {
 	s := mappingServer(t, http.StatusNotFound, `{"error":{"type":"index_not_found_exception"}}`)
-
 	err := s.ValidateMapping(context.Background(), map[string]string{"id": "unsigned_long"})
 	if err == nil {
 		t.Fatal("expected a missing index to fail")
@@ -174,7 +163,6 @@ func TestValidateReportsAMissingIndexClearly(t *testing.T) {
 	if !strings.Contains(err.Error(), "does not exist") {
 		t.Errorf("error should say the index is missing, got: %v", err)
 	}
-	// The message should point at the fix.
 	if !strings.Contains(err.Error(), "generate-schema") {
 		t.Errorf("error should suggest how to create it, got: %v", err)
 	}
@@ -187,7 +175,6 @@ func TestValidateRefusesANameResolvingToSeveralIndices(t *testing.T) {
 		"orders-v1": {"mappings":{"properties":{"id":{"type":"unsigned_long"}}}},
 		"orders-v2": {"mappings":{"properties":{"id":{"type":"unsigned_long"}}}}
 	}`)
-
 	err := s.ValidateMapping(context.Background(), map[string]string{"id": "unsigned_long"})
 	if err == nil {
 		t.Fatal("expected an ambiguous name to be refused")
@@ -199,7 +186,6 @@ func TestValidateRefusesANameResolvingToSeveralIndices(t *testing.T) {
 
 func TestValidateFailsOnAnUnreadableResponse(t *testing.T) {
 	s := mappingServer(t, http.StatusOK, `not json`)
-
 	if err := s.ValidateMapping(context.Background(), map[string]string{"id": "unsigned_long"}); err == nil {
 		t.Fatal("expected an unreadable mapping to fail rather than be assumed correct")
 	}
@@ -207,7 +193,6 @@ func TestValidateFailsOnAnUnreadableResponse(t *testing.T) {
 
 func TestValidateRequiresSomethingToCheck(t *testing.T) {
 	s := mappingServer(t, http.StatusOK, mappingBody(`"id": {"type":"unsigned_long"}`))
-
 	if err := s.ValidateMapping(context.Background(), nil); err == nil {
 		t.Fatal("expected validating an empty field set to be refused")
 	}
@@ -219,7 +204,6 @@ func TestValidateReportsEveryProblemTogether(t *testing.T) {
 		"id":     {"type":"long"},
 		"status": {"type":"text"}
 	`))
-
 	err := s.ValidateMapping(context.Background(), map[string]string{
 		"id": "unsigned_long", "status": "keyword", "missing": "date",
 	})

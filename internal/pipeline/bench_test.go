@@ -11,9 +11,6 @@ import (
 	"github.com/ErfanMomeniii/changeflow/internal/schema"
 )
 
-// benchMeta and benchRow mirror the development schema, including the columns whose
-// encoding costs the most: an exact decimal, an enum, a set, a latin1 string, and
-// two flavours of timestamp.
 var benchMeta = func() schema.TableMeta {
 	m := schema.TableMeta{
 		Schema: "shop",
@@ -54,11 +51,8 @@ func benchRow() cdc.Row {
 	}
 }
 
-// benchPlan compiles a mapping over the awkward table, so the measurement covers
-// the work a real stream does rather than a trivial two-column case.
 func benchPlan(b *testing.B, dialect Dialect) *Plan {
 	b.Helper()
-
 	m := &benchMeta
 	p, err := Compile(m, config.Mapping{Key: []string{"id"}}, dialect, time.UTC, "null")
 	if err != nil {
@@ -70,7 +64,6 @@ func benchPlan(b *testing.B, dialect Dialect) *Plan {
 func BenchmarkTransformInsert(b *testing.B) {
 	p := benchPlan(b, DialectElasticsearch)
 	ev := &cdc.ChangeEvent{Meta: &benchMeta, Operation: cdc.OperationInsert, After: benchRow(), Seq: 1000}
-
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -89,7 +82,6 @@ func BenchmarkTransformUpdate(b *testing.B) {
 	before, after := benchRow(), benchRow()
 	after[2] = int64(3)
 	ev := &cdc.ChangeEvent{Meta: &benchMeta, Operation: cdc.OperationUpdate, Before: before, After: after, Seq: 1000}
-
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -102,7 +94,6 @@ func BenchmarkTransformUpdate(b *testing.B) {
 func BenchmarkTransformDelete(b *testing.B) {
 	p := benchPlan(b, DialectElasticsearch)
 	ev := &cdc.ChangeEvent{Meta: &benchMeta, Operation: cdc.OperationDelete, Before: benchRow(), Seq: 1000}
-
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -118,7 +109,6 @@ func BenchmarkBatcherAdd(b *testing.B) {
 		b.Fatal(err)
 	}
 	doc := cdc.Doc{Key: "1234567890", Version: 1, Body: []byte(`{"id":1234567890,"status":"paid"}`)}
-
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -139,26 +129,13 @@ func TestTransformStaysWithinItsAllocationBudget(t *testing.T) {
 	if raceDetectorEnabled {
 		t.Skip("performance budgets are not measured under the race detector, which multiplies both time and allocation counts")
 	}
-
-	// The time bound comes from the design's target of 150k documents per second per
-	// core, which is 6.7 microseconds each. Measured cost is around 1 microsecond, so
-	// this bound catches a collapse rather than a small regression, and stays honest
-	// on a slower shared runner.
 	const perDocumentBudget = 6_700
-
 	for _, tc := range []struct {
 		name      string
 		benchmark func(*testing.B)
 		maxAllocs int64
 		maxNanos  int64
 	}{
-		// Allocation counts are set just above what the code does today: the body
-		// buffer, the key, the returned slice, and the values copied into the body.
-		//
-		// The design aims at under one allocation per event, which these do not meet.
-		// Reaching it means pooling the body buffer, and pooling needs the sink to
-		// signal when it has finished with the bytes. Recorded here rather than
-		// quietly written off.
 		{"insert", BenchmarkTransformInsert, 14, perDocumentBudget},
 		{"update", BenchmarkTransformUpdate, 17, perDocumentBudget},
 		{"delete", BenchmarkTransformDelete, 5, perDocumentBudget},
@@ -169,7 +146,6 @@ func TestTransformStaysWithinItsAllocationBudget(t *testing.T) {
 			if result.N == 0 {
 				t.Fatal("benchmark did not run")
 			}
-
 			if allocs := result.AllocsPerOp(); allocs > tc.maxAllocs {
 				t.Errorf("%d allocations per event, budget is %d; %s",
 					allocs, tc.maxAllocs, result.MemString())

@@ -17,9 +17,7 @@ import (
 // one copy of the binlog per stream. A table watched by two streams receives the event
 // twice, since each has its own mapping, batching, and position.
 type Router struct {
-	// byTable is keyed by lowercased database.table.
-	byTable map[string][]chan cdc.ChangeEvent
-	// closeOnce guards Close, which the reader loop and a failure path may both reach.
+	byTable   map[string][]chan cdc.ChangeEvent
 	closeOnce sync.Once
 	channels  []chan cdc.ChangeEvent
 }
@@ -54,7 +52,6 @@ func (r *Router) Route(ctx context.Context, ev cdc.ChangeEvent) error {
 	if ev.Meta == nil {
 		return nil
 	}
-
 	targets := r.byTable[strings.ToLower(ev.Meta.Name())]
 	for _, out := range targets {
 		select {
@@ -75,17 +72,10 @@ func (r *Router) Close() {
 	})
 }
 
-// sharedStartPosition picks the position a shared reader must start from.
-//
-// It has to be one no stream has passed, or a stream behind the others would never receive
-// the changes it still needs. Re-delivering what a stream ahead already applied is
-// harmless, since versions only increase. Streams that cannot be reconciled this way are
-// refused rather than silently having changes skipped.
 func sharedStartPosition(positions map[string]string) (string, error) {
 	if len(positions) == 0 {
 		return "", fmt.Errorf("supervisor: no stream provided a start position")
 	}
-
 	parsed := make(map[string]mysql.GTIDSet, len(positions))
 	for stream, text := range positions {
 		set, err := mysql.ParseMysqlGTIDSet(text)
@@ -94,7 +84,6 @@ func sharedStartPosition(positions map[string]string) (string, error) {
 		}
 		parsed[stream] = set
 	}
-
 	for stream, candidate := range parsed {
 		containedInAll := true
 		for other, set := range parsed {
@@ -110,7 +99,6 @@ func sharedStartPosition(positions map[string]string) (string, error) {
 			return positions[stream], nil
 		}
 	}
-
 	var described []string
 	for stream, text := range positions {
 		described = append(described, fmt.Sprintf("%s at %s", stream, text))

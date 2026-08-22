@@ -2,7 +2,6 @@ package preflight
 
 import "testing"
 
-// goodVars is a MySQL 8 configured exactly the way changeflow needs it.
 func goodVars() map[string]string {
 	return map[string]string{
 		"version":                    "8.0.36",
@@ -36,7 +35,6 @@ func find(t *testing.T, r Report, name string) Check {
 
 func TestEvaluateAcceptsCorrectlyConfiguredServer(t *testing.T) {
 	r := Evaluate(goodVars(), goodGrants())
-
 	if !r.OK() {
 		t.Fatalf("expected OK, got failures: %v", r.Failures())
 	}
@@ -48,9 +46,7 @@ func TestEvaluateAcceptsCorrectlyConfiguredServer(t *testing.T) {
 func TestEvaluateRejectsStatementBinlogFormat(t *testing.T) {
 	vars := goodVars()
 	vars["binlog_format"] = "STATEMENT"
-
 	r := Evaluate(vars, goodGrants())
-
 	if r.OK() {
 		t.Fatal("expected failure for binlog_format=STATEMENT")
 	}
@@ -66,9 +62,7 @@ func TestEvaluateRejectsStatementBinlogFormat(t *testing.T) {
 func TestEvaluateRejectsMinimalRowImage(t *testing.T) {
 	vars := goodVars()
 	vars["binlog_row_image"] = "MINIMAL"
-
 	r := Evaluate(vars, goodGrants())
-
 	if c := find(t, r, "binlog_row_image"); c.OK {
 		t.Fatalf("expected failure for MINIMAL row image, got %+v", c)
 	}
@@ -84,9 +78,7 @@ func TestEvaluateRejectsMissingRowMetadata(t *testing.T) {
 	vars := goodVars()
 	delete(vars, "binlog_row_metadata")
 	vars["version"] = "5.7.44"
-
 	r := Evaluate(vars, goodGrants())
-
 	c := find(t, r, "binlog_row_metadata")
 	if c.OK || c.Severity != Required {
 		t.Fatalf("expected required failure, got %+v", c)
@@ -102,9 +94,7 @@ func TestEvaluateRejectsMissingRowMetadata(t *testing.T) {
 func TestEvaluateRejectsGtidModeOff(t *testing.T) {
 	vars := goodVars()
 	vars["gtid_mode"] = "OFF"
-
 	r := Evaluate(vars, goodGrants())
-
 	if c := find(t, r, "gtid_mode"); c.OK {
 		t.Fatalf("expected failure, got %+v", c)
 	}
@@ -120,9 +110,7 @@ func TestEvaluateAcceptsLowercaseValues(t *testing.T) {
 	vars["log_bin"] = "on"
 	vars["binlog_row_image"] = "full"
 	vars["binlog_row_metadata"] = "full"
-
 	r := Evaluate(vars, goodGrants())
-
 	if !r.OK() {
 		t.Fatalf("expected case-insensitive comparison to pass, got %v", r.Failures())
 	}
@@ -131,9 +119,7 @@ func TestEvaluateAcceptsLowercaseValues(t *testing.T) {
 func TestEvaluateRejectsZeroServerID(t *testing.T) {
 	vars := goodVars()
 	vars["server_id"] = "0"
-
 	r := Evaluate(vars, goodGrants())
-
 	if c := find(t, r, "server_id"); c.OK {
 		t.Fatalf("expected failure for server_id=0, got %+v", c)
 	}
@@ -141,7 +127,6 @@ func TestEvaluateRejectsZeroServerID(t *testing.T) {
 
 func TestEvaluateAcceptsAllPrivileges(t *testing.T) {
 	r := Evaluate(goodVars(), []string{"GRANT ALL PRIVILEGES ON *.* TO `root`@`localhost` WITH GRANT OPTION"})
-
 	for _, name := range []string{"grant:REPLICATION SLAVE", "grant:REPLICATION CLIENT", "grant:SELECT"} {
 		if c := find(t, r, name); !c.OK {
 			t.Fatalf("expected %s satisfied by ALL PRIVILEGES, got %+v", name, c)
@@ -151,7 +136,6 @@ func TestEvaluateAcceptsAllPrivileges(t *testing.T) {
 
 func TestEvaluateRejectsMissingReplicationClientGrant(t *testing.T) {
 	r := Evaluate(goodVars(), []string{"GRANT SELECT, REPLICATION SLAVE ON *.* TO `cdc`@`%`"})
-
 	if c := find(t, r, "grant:REPLICATION CLIENT"); c.OK {
 		t.Fatalf("expected missing REPLICATION CLIENT to fail, got %+v", c)
 	}
@@ -168,7 +152,6 @@ func TestEvaluateAcceptsTableScopedSelectGrant(t *testing.T) {
 		"GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO `cdc`@`%`",
 		"GRANT SELECT ON `shop`.* TO `cdc`@`%`",
 	})
-
 	if c := find(t, r, "grant:SELECT"); !c.OK {
 		t.Fatalf("expected scoped SELECT grant to satisfy the check, got %+v", c)
 	}
@@ -179,9 +162,7 @@ func TestEvaluateAcceptsTableScopedSelectGrant(t *testing.T) {
 func TestShortBinlogRetentionIsAdvisoryNotFatal(t *testing.T) {
 	vars := goodVars()
 	vars["binlog_expire_logs_seconds"] = "3600"
-
 	r := Evaluate(vars, goodGrants())
-
 	c := find(t, r, "binlog retention")
 	if c.OK {
 		t.Fatalf("expected advisory warning for 1h retention, got %+v", c)
@@ -200,9 +181,7 @@ func TestShortBinlogRetentionIsAdvisoryNotFatal(t *testing.T) {
 func TestZeroRetentionMeansNeverExpireAndIsFine(t *testing.T) {
 	vars := goodVars()
 	vars["binlog_expire_logs_seconds"] = "0"
-
 	r := Evaluate(vars, goodGrants())
-
 	if c := find(t, r, "binlog retention"); !c.OK {
 		t.Fatalf("0 means binlogs never expire, which is safe for us: %+v", c)
 	}
@@ -211,9 +190,7 @@ func TestZeroRetentionMeansNeverExpireAndIsFine(t *testing.T) {
 func TestEnforceGtidConsistencyIsAdvisory(t *testing.T) {
 	vars := goodVars()
 	vars["enforce_gtid_consistency"] = "OFF"
-
 	r := Evaluate(vars, goodGrants())
-
 	c := find(t, r, "enforce_gtid_consistency")
 	if c.OK || c.Severity != Advisory {
 		t.Fatalf("expected advisory failure, got %+v", c)
@@ -225,7 +202,6 @@ func TestEnforceGtidConsistencyIsAdvisory(t *testing.T) {
 
 func TestEveryCheckExplainsWhyItMatters(t *testing.T) {
 	r := Evaluate(goodVars(), goodGrants())
-
 	for _, c := range r.Checks {
 		if c.Why == "" {
 			t.Errorf("check %q has no Why; an operator reading a failure needs the reason", c.Name)
@@ -236,9 +212,7 @@ func TestEveryCheckExplainsWhyItMatters(t *testing.T) {
 func TestEvaluateRejectsMariaDB(t *testing.T) {
 	vars := goodVars()
 	vars["version"] = "11.4.2-MariaDB-1:11.4.2+maria~ubu2404"
-
 	r := Evaluate(vars, goodGrants())
-
 	c := find(t, r, "server version")
 	if c.OK || c.Severity != Required {
 		t.Fatalf("expected required failure for MariaDB, got %+v", c)
@@ -252,9 +226,7 @@ func TestEvaluateRejectsMySQLTooOldForRowMetadata(t *testing.T) {
 	vars := goodVars()
 	vars["version"] = "5.7.44-log"
 	delete(vars, "binlog_row_metadata")
-
 	r := Evaluate(vars, goodGrants())
-
 	if c := find(t, r, "server version"); c.OK {
 		t.Fatalf("expected 5.7 to fail the version check, got %+v", c)
 	}
@@ -264,7 +236,6 @@ func TestEvaluateAcceptsVersionSuffixes(t *testing.T) {
 	for _, v := range []string{"8.0.36", "8.0.1", "8.4.9", "9.0.0", "8.0.36-log", "8.4.0-0ubuntu0.24.04.1"} {
 		vars := goodVars()
 		vars["version"] = v
-
 		if c := find(t, Evaluate(vars, goodGrants()), "server version"); !c.OK {
 			t.Errorf("expected %q to be accepted, got %+v", v, c)
 		}
@@ -275,7 +246,6 @@ func TestEvaluateRejectsVersionsBelowMinimum(t *testing.T) {
 	for _, v := range []string{"8.0.0", "5.7.44", "5.6.51", "8", "unknown"} {
 		vars := goodVars()
 		vars["version"] = v
-
 		if c := find(t, Evaluate(vars, goodGrants()), "server version"); c.OK {
 			t.Errorf("expected %q to be rejected, got %+v", v, c)
 		}
@@ -285,7 +255,6 @@ func TestEvaluateRejectsVersionsBelowMinimum(t *testing.T) {
 func TestEvaluateRejectsMissingVersion(t *testing.T) {
 	vars := goodVars()
 	delete(vars, "version")
-
 	if c := find(t, Evaluate(vars, goodGrants()), "server version"); c.OK {
 		t.Fatalf("expected failure when version is unknown, got %+v", c)
 	}
@@ -293,7 +262,6 @@ func TestEvaluateRejectsMissingVersion(t *testing.T) {
 
 func TestReportGetExposesObservedValues(t *testing.T) {
 	r := Evaluate(goodVars(), goodGrants())
-
 	got, ok := r.Get("server_id")
 	if !ok {
 		t.Fatal("expected server_id to be present")
@@ -312,9 +280,7 @@ func TestReportGetExposesObservedValues(t *testing.T) {
 func TestEvaluateRejectsPartialJSONLogging(t *testing.T) {
 	vars := goodVars()
 	vars["binlog_row_value_options"] = "PARTIAL_JSON"
-
 	r := Evaluate(vars, goodGrants())
-
 	if r.OK() {
 		t.Fatal("a server logging JSON diffs was accepted")
 	}
@@ -331,7 +297,6 @@ func TestEvaluateRejectsPartialJSONLogging(t *testing.T) {
 // in the output.
 func TestEvaluateReportsAnEmptyRowValueOptionsReadably(t *testing.T) {
 	c := find(t, Evaluate(goodVars(), goodGrants()), "binlog_row_value_options")
-
 	if !c.OK {
 		t.Errorf("the default was reported as a failure: %+v", c)
 	}
@@ -345,9 +310,7 @@ func TestEvaluateReportsAnEmptyRowValueOptionsReadably(t *testing.T) {
 func TestEvaluateAcceptsAServerWithoutRowValueOptions(t *testing.T) {
 	vars := goodVars()
 	delete(vars, "binlog_row_value_options")
-
 	r := Evaluate(vars, goodGrants())
-
 	if c := find(t, r, "binlog_row_value_options"); !c.OK {
 		t.Errorf("an absent setting was treated as a failure: %+v", c)
 	}

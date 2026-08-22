@@ -14,7 +14,6 @@ import (
 
 func newRunCmd() *cobra.Command {
 	var path, stream, dlqDir string
-
 	cmd := &cobra.Command{
 		Use:   "run",
 		Short: "Replicate configured streams until interrupted",
@@ -24,7 +23,6 @@ func newRunCmd() *cobra.Command {
 			return replicate(cmd.Context(), path, stream, dlqDir)
 		},
 	}
-
 	configFlag(cmd, &path)
 	cmd.Flags().StringVar(&stream, "stream", "", "run only this stream; by default every configured stream runs, sharing one connection to the source")
 	cmd.Flags().StringVar(&dlqDir, "dlq-dir", "dlq", "directory for records of documents a destination refused")
@@ -36,14 +34,10 @@ func replicate(ctx context.Context, path, stream, dlqDir string) error {
 	if err != nil {
 		return err
 	}
-	// A configuration whose buffers and in-flight batches exceed the process memory
-	// limit is a scheduled crash, so it is better refused here.
 	if err := cfg.CheckMemoryLimit(debug.SetMemoryLimit(-1)); err != nil {
 		return err
 	}
-
 	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-
 	sup, err := supervisor.New(cfg, stream, dlqDir, log)
 	if err != nil {
 		return err

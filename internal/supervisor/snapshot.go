@@ -1,7 +1,5 @@
 package supervisor
 
-// Backfill: scanning a table into a destination before streaming begins.
-
 import (
 	"context"
 	"database/sql"
@@ -14,11 +12,6 @@ import (
 	"github.com/ErfanMomeniii/changeflow/internal/source/snapshot"
 )
 
-// backfill runs any outstanding table scan and reports where each stream is to start
-// streaming from.
-//
-// One stream at a time: reading two tables at once would double the load a backfill puts on
-// the source without finishing any sooner.
 func (s *Supervisor) backfill(ctx context.Context, sess *session, runtimes []*streamRuntime) (map[string]string, error) {
 	positions := make(map[string]string, len(runtimes))
 	for _, rt := range runtimes {
@@ -31,29 +24,17 @@ func (s *Supervisor) backfill(ctx context.Context, sess *session, runtimes []*st
 	return positions, nil
 }
 
-// snapshotIfNeeded runs a stream's table scan when one is outstanding, and returns where
-// its streaming should begin.
-//
-// The order is what makes a lock-free scan correct: the position is captured first, so
-// changes made during the scan are still in the binlog afterwards and carry versions above
-// the one stamped on scanned rows. A row modified while being scanned therefore ends up
-// with the modification, never the stale copy.
 func (s *Supervisor) snapshotIfNeeded(ctx context.Context, sess *session, rt *streamRuntime) (string, error) {
 	cp, err := sess.store.Load(ctx, rt.cfg.Name)
 	if err != nil && !errors.Is(err, checkpoint.ErrNotFound) {
-		// A position that cannot be read must never be guessed at: streaming from the
-		// wrong place silently skips or duplicates data.
 		return "", fmt.Errorf("supervisor: read checkpoint: %w", err)
 	}
-
-	// Already streaming: resume where the destination was last acknowledged.
 	if cp.SnapshotDone && cp.GTIDSet != "" {
 		return cp.GTIDSet, nil
 	}
 	if !rt.cfg.Snapshot.Enabled {
 		return s.startWithoutSnapshot(ctx, sess, rt, cp)
 	}
-
 	cp, err = s.markScanStarted(ctx, sess, rt, cp)
 	if err != nil {
 		return "", err
@@ -61,8 +42,6 @@ func (s *Supervisor) snapshotIfNeeded(ctx context.Context, sess *session, rt *st
 	return s.runScan(ctx, sess, rt, cp)
 }
 
-// startWithoutSnapshot begins at the source's current position for a stream configured not
-// to scan, and records that as a finished snapshot so later starts resume normally.
 func (s *Supervisor) startWithoutSnapshot(
 	ctx context.Context,
 	sess *session,
@@ -72,14 +51,12 @@ func (s *Supervisor) startWithoutSnapshot(
 	if cp.GTIDSet != "" {
 		return cp.GTIDSet, nil
 	}
-
 	position, err := currentPosition(ctx, sess.sourceDB)
 	if err != nil {
 		return "", err
 	}
 	s.log.Warn("snapshots are disabled, so rows written before now will not appear in the destination",
 		"stream", rt.cfg.Name, "from", position)
-
 	cp.Stream, cp.SnapshotDone, cp.GTIDSet = rt.cfg.Name, true, position
 	if err := sess.store.Save(ctx, cp); err != nil {
 		return "", fmt.Errorf("supervisor: record start position: %w", err)
@@ -87,10 +64,6 @@ func (s *Supervisor) startWithoutSnapshot(
 	return position, nil
 }
 
-// markScanStarted records what a scan must be anchored to before it reads a row.
-//
-// A first attempt captures the position and the version to stamp on scanned rows. A resumed
-// attempt keeps both, or the guarantee above would not hold.
 func (s *Supervisor) markScanStarted(
 	ctx context.Context,
 	sess *session,
@@ -102,7 +75,6 @@ func (s *Supervisor) markScanStarted(
 			"stream", rt.cfg.Name, "rows_done", cp.SnapshotRowsDone, "estimated_rows", cp.SnapshotRowsTotal)
 		return cp, nil
 	}
-
 	position, err := currentPosition(ctx, sess.sourceDB)
 	if err != nil {
 		return cp, err
@@ -111,7 +83,6 @@ func (s *Supervisor) markScanStarted(
 	if err != nil {
 		return cp, fmt.Errorf("supervisor: allocate the snapshot version: %w", err)
 	}
-
 	cp.Stream = rt.cfg.Name
 	cp.SnapshotStartGTID = position
 	cp.SnapshotBaseSeq = baseSeq
@@ -125,7 +96,6 @@ func (s *Supervisor) markScanStarted(
 	return cp, nil
 }
 
-// runScan reads the table into the destination and reports where streaming begins.
 func (s *Supervisor) runScan(
 	ctx context.Context,
 	sess *session,
@@ -134,8 +104,6 @@ func (s *Supervisor) runScan(
 ) (string, error) {
 	scanDB := sess.sourceDB
 	if s.cfg.Source.SnapshotDSN != "" {
-		// A scan is the only part of changeflow that can slow the source down, so it can
-		// be pointed at a replica instead.
 		replica, err := openMySQL(ctx, s.cfg.Source.SnapshotDSN)
 		if err != nil {
 			return "", fmt.Errorf("supervisor: connect for the table scan: %w", err)
@@ -143,21 +111,16 @@ func (s *Supervisor) runScan(
 		defer replica.Close()
 		scanDB = replica
 	}
-
 	scanner, err := s.newScanner(scanDB, rt, cp)
 	if err != nil {
 		return "", err
 	}
-
 	rt.metrics.SnapshotRunning(true)
 	defer rt.metrics.SnapshotRunning(false)
-
 	if err := s.scan(ctx, rt, scanner); err != nil {
 		return "", err
 	}
 	if !scanner.Done() {
-		// Stopping short is not a failure, but the scan must not be recorded as complete,
-		// or the rows it never reached would never be written.
 		return "", ctx.Err()
 	}
 	return s.finishScan(ctx, sess, rt)
@@ -168,7 +131,6 @@ func (s *Supervisor) newScanner(scanDB *sql.DB, rt *streamRuntime, cp checkpoint
 	if err != nil {
 		return nil, fmt.Errorf("supervisor: %w", err)
 	}
-
 	estimated := cp.SnapshotRowsTotal
 	return snapshot.New(snapshot.Options{
 		DB:            scanDB,
@@ -186,11 +148,7 @@ func (s *Supervisor) newScanner(scanDB *sql.DB, rt *streamRuntime, cp checkpoint
 	})
 }
 
-// finishScan records a completed scan, moves readers onto what it filled, and reports where
-// streaming begins.
 func (s *Supervisor) finishScan(ctx context.Context, sess *session, rt *streamRuntime) (string, error) {
-	// Re-read rather than reuse: the pipeline has been advancing the row throughout the
-	// scan, so the copy taken at the start is stale.
 	cp, err := sess.store.Load(ctx, rt.cfg.Name)
 	if err != nil {
 		return "", fmt.Errorf("supervisor: read checkpoint after the scan: %w", err)
@@ -202,27 +160,18 @@ func (s *Supervisor) finishScan(ctx context.Context, sess *session, rt *streamRu
 		return "", fmt.Errorf("supervisor: record the completed scan: %w", err)
 	}
 	s.log.Info("table scan complete", "stream", rt.cfg.Name, "rows", cp.SnapshotRowsDone)
-
 	if err := s.promoteAlias(ctx, rt); err != nil {
 		return "", err
 	}
-
-	// Streaming begins where the scan began, so every change made during it is applied on
-	// top.
 	return cp.SnapshotStartGTID, nil
 }
 
-// scan fills the destination from the table, with refreshing turned off where that is safe.
 func (s *Supervisor) scan(ctx context.Context, rt *streamRuntime, scanner *snapshot.Snapshotter) error {
 	load, err := s.beginBulkLoad(ctx, rt)
 	if err != nil {
-		// A scan that cannot change the destination's settings is slower, not wrong.
 		s.log.Warn("could not prepare the destination for a bulk load",
 			"stream", rt.cfg.Name, "error", err)
 	}
-	// Restored even when the scan stops early, so an interrupted rebuild does not leave
-	// behind an index that never refreshes. Detached from the cancelled context, since
-	// shutdown is exactly when this has to still happen.
 	defer func() {
 		if !load.Applied() {
 			return
@@ -234,7 +183,6 @@ func (s *Supervisor) scan(ctx context.Context, rt *streamRuntime, scanner *snaps
 				"stream", rt.cfg.Name, "index", rt.cfg.Sink.Index, "error", err)
 		}
 	}()
-
 	if err := rt.runner.Run(ctx, scanner.Events(ctx)); err != nil {
 		return err
 	}
@@ -244,9 +192,6 @@ func (s *Supervisor) scan(ctx context.Context, rt *streamRuntime, scanner *snaps
 	if !scanner.Done() {
 		return nil
 	}
-
-	// Merged once the index is full, because a scan leaves far more segments behind than
-	// an index that grew gradually, and search cost scales with their number.
 	if load.Applied() {
 		if err := rt.sink.(*elasticsearch.Sink).ForceMerge(ctx); err != nil {
 			s.log.Warn("could not merge the scanned index's segments, which only makes it slower to search",
@@ -256,20 +201,12 @@ func (s *Supervisor) scan(ctx context.Context, rt *streamRuntime, scanner *snaps
 	return nil
 }
 
-// beginBulkLoad relaxes the destination's settings for a scan, but only when readers are
-// not using the index being filled.
-//
-// An index with refreshing off answers searches with nothing, so this is only for an
-// index being built behind an alias. Without an alias the index being filled is the one
-// being read, and it is left alone.
 func (s *Supervisor) beginBulkLoad(ctx context.Context, rt *streamRuntime) (elasticsearch.LoadSettings, error) {
 	var none elasticsearch.LoadSettings
-
 	es, ok := rt.sink.(*elasticsearch.Sink)
 	if !ok || rt.cfg.Sink.Alias == "" {
 		return none, nil
 	}
-
 	targets, err := es.AliasTargets(ctx)
 	if err != nil {
 		return none, err
@@ -279,22 +216,16 @@ func (s *Supervisor) beginBulkLoad(ctx context.Context, rt *streamRuntime) (elas
 			return none, nil
 		}
 	}
-
 	s.log.Info("filling a new index with refreshing off for the scan",
 		"stream", rt.cfg.Name, "index", rt.cfg.Sink.Index, "readers_on", targets)
 	return es.BeginBulkLoad(ctx)
 }
 
-// promoteAlias moves readers to the index a scan has just filled.
-//
-// Done after the scan rather than at startup, because until it finishes the index is
-// incomplete and pointing readers at it would show them a half-built table.
 func (s *Supervisor) promoteAlias(ctx context.Context, rt *streamRuntime) error {
 	es, ok := rt.sink.(*elasticsearch.Sink)
 	if !ok || rt.cfg.Sink.Alias == "" {
 		return nil
 	}
-
 	before, err := es.AliasTargets(ctx)
 	if err != nil {
 		return fmt.Errorf("supervisor: %w", err)

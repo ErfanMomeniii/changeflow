@@ -1,8 +1,5 @@
 package supervisor
 
-// Construction of the pieces a stream is assembled from, and the source lookups
-// that assembly needs.
-
 import (
 	"context"
 	"database/sql"
@@ -26,16 +23,11 @@ import (
 	"github.com/ErfanMomeniii/changeflow/internal/sink/elasticsearch"
 )
 
-// prepare builds each stream's parts, stopping at the first that cannot be built.
-//
-// Whatever was already created is returned even on failure, so locks and files are released
-// rather than held until the process exits.
 func (s *Supervisor) prepare(ctx context.Context, sess *session) ([]*streamRuntime, error) {
 	zone, err := time.LoadLocation(s.cfg.Source.TimeZone)
 	if err != nil {
 		return nil, fmt.Errorf("supervisor: source.time_zone %q: %w", s.cfg.Source.TimeZone, err)
 	}
-
 	runtimes := make([]*streamRuntime, 0, len(s.streams))
 	for _, stream := range s.streams {
 		rt := &streamRuntime{cfg: stream, metrics: s.metrics[stream.Name]}
@@ -47,67 +39,47 @@ func (s *Supervisor) prepare(ctx context.Context, sess *session) ([]*streamRunti
 	return runtimes, nil
 }
 
-// buildStream assembles one stream, in the order that surfaces a refusal soonest: the claim
-// on the stream, then what can be checked against the source and the destination, then the
-// parts that write.
 func (s *Supervisor) buildStream(ctx context.Context, sess *session, rt *streamRuntime, zone *time.Location) error {
 	stream := rt.cfg
-
-	// Two processes replicating one stream would double-write and fight over a server id,
-	// and the resulting errors name neither culprit.
 	lock, err := sess.store.Lock(ctx, stream.Name)
 	if err != nil {
 		return fmt.Errorf("supervisor: %w", err)
 	}
 	rt.lock = lock
-
 	rt.meta, err = sess.schemas.Table(ctx, stream.Schema(), stream.TableName())
 	if err != nil {
 		return fmt.Errorf("supervisor: %w", err)
 	}
-
 	dialect, err := dialectFor(stream.Sink.Type)
 	if err != nil {
 		return err
 	}
-
-	// Compiling now surfaces an unmappable column or an impossible key before any
-	// document is written.
 	rt.plan, err = pipeline.Compile(rt.meta, stream.Mapping, dialect, zone, stream.Mapping.OnZeroDate)
 	if err != nil {
 		return fmt.Errorf("supervisor: %w", err)
 	}
-
 	if rt.sink, err = buildSink(stream); err != nil {
 		return err
 	}
-
-	// A field declared as the wrong type does not fail the write: it changes the value, and
-	// correcting it later means rebuilding everything written meanwhile.
 	if err := s.validateDestination(ctx, stream, rt.sink, rt.meta); err != nil {
 		return err
 	}
-
 	if rt.dlq, err = dlq.New(dlq.Options{Dir: s.dlqDir, Stream: stream.Name}); err != nil {
 		return err
 	}
-
 	rt.alloc, err = checkpoint.NewAllocator(ctx, sess.store, stream.Name, seqBlockSize, time.Now)
 	if err != nil {
 		return err
 	}
-
 	if rt.runner, err = s.buildRunner(rt, sess.store); err != nil {
 		return err
 	}
-
 	rt.events = make(chan cdc.ChangeEvent, s.cfg.Runtime.BufferSize)
 	return nil
 }
 
 func (s *Supervisor) buildRunner(rt *streamRuntime, store *checkpoint.MySQLStore) (*pipeline.Runner, error) {
 	stream := rt.cfg
-
 	return pipeline.NewRunner(pipeline.RunnerOptions{
 		Stream: stream.Name,
 		Plan:   rt.plan,
@@ -125,12 +97,8 @@ func (s *Supervisor) buildRunner(rt *streamRuntime, store *checkpoint.MySQLStore
 	})
 }
 
-// release gives up locks and closes destinations.
 func (s *Supervisor) release(ctx context.Context, runtimes []*streamRuntime) {
-	// Detached from the caller's context, which is usually already cancelled by the time
-	// this runs.
 	ctx = context.WithoutCancel(ctx)
-
 	for _, rt := range runtimes {
 		if rt.sink != nil {
 			rt.sink.Close()
@@ -146,14 +114,11 @@ func (s *Supervisor) release(ctx context.Context, runtimes []*streamRuntime) {
 	}
 }
 
-// validateDestination compares a destination's schema against what its stream will write.
 func (s *Supervisor) validateDestination(ctx context.Context, stream *config.Stream, destination sink.Sink, meta *schema.TableMeta) error {
 	es, ok := destination.(*elasticsearch.Sink)
 	if !ok {
-		// Nothing to check for a destination whose schema changeflow cannot read.
 		return nil
 	}
-
 	key, err := meta.ResolveKey(stream.Mapping.Key)
 	if err != nil {
 		return fmt.Errorf("supervisor: %w", err)
@@ -163,7 +128,6 @@ func (s *Supervisor) validateDestination(ctx context.Context, stream *config.Str
 	if err != nil {
 		return fmt.Errorf("supervisor: %w", err)
 	}
-
 	if err := es.ValidateMapping(ctx, expected); err != nil {
 		return fmt.Errorf("supervisor: %w", err)
 	}
@@ -182,7 +146,6 @@ func buildSink(stream *config.Stream) (sink.Sink, error) {
 			Workers:   stream.Sink.Workers,
 			Compress:  true,
 		})
-
 	case config.SinkClickHouse:
 		return clickhouse.New(clickhouse.Options{
 			DSN:      stream.Sink.DSN,
@@ -190,7 +153,6 @@ func buildSink(stream *config.Stream) (sink.Sink, error) {
 			Workers:  stream.Sink.Workers,
 			Compress: true,
 		})
-
 	default:
 		return nil, fmt.Errorf("supervisor: sink type %q is not implemented", stream.Sink.Type)
 	}
@@ -219,8 +181,6 @@ func currentPosition(ctx context.Context, db *sql.DB) (string, error) {
 	return gtid, nil
 }
 
-// estimateRows reads the optimiser's row estimate, which drives a progress percentage only.
-// It is approximate by nature, and nothing depends on its accuracy.
 func estimateRows(ctx context.Context, db *sql.DB, meta *schema.TableMeta) uint64 {
 	var rows sql.NullInt64
 	err := db.QueryRowContext(ctx,
@@ -237,7 +197,6 @@ func openMySQL(ctx context.Context, dsn string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	// One connection per stream for locks, plus a few for schema and checkpoint reads.
 	db.SetMaxOpenConns(16)
 	db.SetConnMaxLifetime(time.Hour)
 	if err := db.PingContext(ctx); err != nil {
@@ -247,8 +206,6 @@ func openMySQL(ctx context.Context, dsn string) (*sql.DB, error) {
 	return db, nil
 }
 
-// addressOf extracts the replication endpoint from a DSN. Replication uses its own
-// connection rather than the SQL driver, so it needs the parts rather than the DSN.
 func addressOf(dsn string) (string, uint16, error) {
 	cfg, err := driver.ParseDSN(dsn)
 	if err != nil {
@@ -257,7 +214,6 @@ func addressOf(dsn string) (string, uint16, error) {
 	if cfg.Net != "tcp" {
 		return "", 0, fmt.Errorf("supervisor: replication needs a tcp dsn, got %q", cfg.Net)
 	}
-
 	host, portStr, err := net.SplitHostPort(cfg.Addr)
 	if err != nil {
 		return strings.Trim(cfg.Addr, "[]"), 3306, nil

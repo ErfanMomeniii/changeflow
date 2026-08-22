@@ -6,8 +6,6 @@ import (
 	"testing"
 )
 
-// generatorMeta covers the columns whose destination type is easy to get wrong by
-// hand, which is the reason this generator exists.
 func generatorMeta() *TableMeta {
 	m := &TableMeta{
 		Schema: "shop",
@@ -47,11 +45,8 @@ func generateES(t *testing.T, include, exclude []string, rename map[string]strin
 	return got
 }
 
-// property reads a field's declared type out of the generated mapping, which also
-// proves the output is valid JSON.
 func property(t *testing.T, body, field string) map[string]any {
 	t.Helper()
-
 	var doc struct {
 		Mappings struct {
 			Dynamic    string                    `json:"dynamic"`
@@ -66,7 +61,6 @@ func property(t *testing.T, body, field string) map[string]any {
 
 func TestGeneratedMappingIsValidJSON(t *testing.T) {
 	got := generateES(t, nil, nil, nil)
-
 	var parsed map[string]any
 	if err := json.Unmarshal([]byte(got.Body), &parsed); err != nil {
 		t.Fatalf("not valid JSON: %v\n%s", err, got.Body)
@@ -77,15 +71,12 @@ func TestGeneratedMappingIsValidJSON(t *testing.T) {
 // cases cannot drift apart.
 func TestGeneratedMappingUsesTheTypeMap(t *testing.T) {
 	got := generateES(t, nil, nil, nil)
-
 	for _, tc := range []struct {
 		field string
 		want  string
 	}{
-		// A signed long would wrap silently above 2^63.
 		{"id", "unsigned_long"},
 		{"user_id", "unsigned_long"},
-		// Exact decimals travel as text, since Elasticsearch has no decimal type.
 		{"total_amount", "keyword"},
 		{"status", "keyword"},
 		{"channels", "keyword"},
@@ -111,7 +102,6 @@ func TestGeneratedMappingUsesTheTypeMap(t *testing.T) {
 // which is how a column added to the source ends up as the wrong type forever.
 func TestGeneratedMappingDisablesDynamicFields(t *testing.T) {
 	got := generateES(t, nil, nil, nil)
-
 	var doc struct {
 		Mappings struct {
 			Dynamic string `json:"dynamic"`
@@ -129,7 +119,6 @@ func TestGeneratedMappingDisablesDynamicFields(t *testing.T) {
 // mapping explosion.
 func TestJSONColumnIsStoredButNotIndexed(t *testing.T) {
 	got := generateES(t, nil, nil, nil)
-
 	p := property(t, got.Body, "metadata")
 	if p["type"] != "object" {
 		t.Fatalf("metadata type = %v, want object", p["type"])
@@ -141,7 +130,6 @@ func TestJSONColumnIsStoredButNotIndexed(t *testing.T) {
 
 func TestGeneratedMappingHonoursIncludeExcludeAndRename(t *testing.T) {
 	got := generateES(t, []string{"id", "total_amount"}, nil, map[string]string{"total_amount": "total"})
-
 	if property(t, got.Body, "total") == nil {
 		t.Error("renamed field is missing")
 	}
@@ -151,7 +139,6 @@ func TestGeneratedMappingHonoursIncludeExcludeAndRename(t *testing.T) {
 	if property(t, got.Body, "status") != nil {
 		t.Error("a field outside the include list should not appear")
 	}
-
 	excluded := generateES(t, nil, []string{"internal_note"}, nil)
 	if property(t, excluded.Body, "internal_note") != nil {
 		t.Error("an excluded field should not appear")
@@ -162,7 +149,6 @@ func TestGeneratedMappingHonoursIncludeExcludeAndRename(t *testing.T) {
 // it and the mapping must not claim it exists.
 func TestGeneratedColumnIsNotInTheMapping(t *testing.T) {
 	got := generateES(t, nil, nil, nil)
-
 	if property(t, got.Body, "total_with_tax") != nil {
 		t.Error("a generated column must not appear in the destination mapping")
 	}
@@ -182,7 +168,6 @@ func TestGeneratedMappingRefusesUnsupportedColumns(t *testing.T) {
 	meta := generatorMeta()
 	meta.Columns = append(meta.Columns, Column{Name: "shape", Position: 12, DataType: "geometry", ColumnType: "geometry"})
 	meta.index()
-
 	_, err := GenerateElasticsearch(meta, nil, nil, []string{"id"}, nil, 1, 1)
 	if err == nil {
 		t.Fatal("expected a spatial column to be refused")
@@ -201,8 +186,6 @@ func generateCH(t *testing.T, rename map[string]string) Generated {
 	return got
 }
 
-// collapseSpaces makes assertions independent of the column alignment, which exists
-// to make generated DDL readable in review rather than to be asserted on.
 func collapseSpaces(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
@@ -210,9 +193,6 @@ func collapseSpaces(s string) string {
 func TestGeneratedClickHouseTableUsesTheReplacingEngine(t *testing.T) {
 	got := generateCH(t, nil)
 	flat := collapseSpaces(got.Body)
-
-	// The engine parameters are load bearing: without them duplicate versions are
-	// never collapsed and deletes never take effect.
 	if !strings.Contains(got.Body, "ENGINE = ReplacingMergeTree(_version, _is_deleted)") {
 		t.Errorf("engine line is wrong:\n%s", got.Body)
 	}
@@ -229,19 +209,14 @@ func TestGeneratedClickHouseTableUsesTheReplacingEngine(t *testing.T) {
 func TestGeneratedClickHouseTypes(t *testing.T) {
 	got := generateCH(t, nil)
 	flat := collapseSpaces(got.Body)
-
 	for _, want := range []string{
 		"`id` UInt64",
 		"`total_amount` Decimal(18, 2)",
 		"`status` LowCardinality(String)",
 		"`channels` Array(String)",
 		"`is_gift` Bool",
-		// A nullable column is wrapped, and LowCardinality sits outside Nullable, which
-		// is the order ClickHouse accepts.
 		"`note` Nullable(String)",
 		"`placed_at` Nullable(DateTime64(3))",
-		// A TIMESTAMP is an instant, so its zone is fixed rather than left to the
-		// reader's session.
 		"`updated_at` DateTime64(3, 'UTC')",
 	} {
 		if !strings.Contains(flat, want) {
@@ -258,7 +233,6 @@ func TestGeneratedClickHouseSortKeyUsesDestinationNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
-
 	if !strings.Contains(got.Body, "ORDER BY (`order_id`)") {
 		t.Errorf("sort key should use the renamed column:\n%s", got.Body)
 	}
@@ -272,7 +246,6 @@ func TestRenameOntoAReservedColumnIsRefused(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a rename onto _version to be refused")
 	}
-
 	if _, err := GenerateElasticsearch(generatorMeta(), nil, nil, []string{"id"},
 		map[string]string{"total_amount": DeletedColumn}, 1, 1); err == nil {
 		t.Fatal("expected a rename onto _is_deleted to be refused")
@@ -290,15 +263,12 @@ func TestGeneratedClickHouseRequiresATableName(t *testing.T) {
 func TestGeneratorWarnsAboutWhatNeedsAttention(t *testing.T) {
 	es := generateES(t, nil, nil, nil)
 	joined := strings.Join(es.Warnings, "\n")
-	// Nullability costs something in ClickHouse and little in Elasticsearch, so the
-	// warning belongs to the generator it applies to.
 	if strings.Contains(strings.ToLower(joined), "null mask") {
 		t.Errorf("an Elasticsearch mapping should not warn about ClickHouse null masks:\n%s", joined)
 	}
 	if !strings.Contains(joined, "alias") {
 		t.Errorf("expected the rebuild procedure to be mentioned:\n%s", joined)
 	}
-
 	ch := generateCH(t, nil)
 	joined = strings.Join(ch.Warnings, "\n")
 	if !strings.Contains(joined, "Nullable") {

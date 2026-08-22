@@ -16,28 +16,21 @@ import (
 	"github.com/ErfanMomeniii/changeflow/internal/cdc"
 )
 
-// recorder is a stub Elasticsearch: it records the bulk bodies it receives and
-// replies with whatever the test queued. Driving 429s and per-item 400s against a
-// real cluster on demand is far harder than asserting them here.
 type recorder struct {
 	mu       sync.Mutex
 	bodies   []string
 	requests int
-
-	// respond returns the status and body for a given attempt, counting from 1.
-	respond func(attempt int, body string) (int, string)
+	respond  func(attempt int, body string) (int, string)
 }
 
 func (r *recorder) handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		body := readBody(req)
-
 		r.mu.Lock()
 		r.requests++
 		attempt := r.requests
 		r.bodies = append(r.bodies, body)
 		r.mu.Unlock()
-
 		status, reply := 200, ""
 		if r.respond != nil {
 			status, reply = r.respond(attempt, body)
@@ -80,7 +73,6 @@ func readBody(req *http.Request) string {
 	return string(raw)
 }
 
-// allItemsOK builds a success response with one item per action line.
 func allItemsOK(body string) string {
 	var items []string
 	for _, line := range strings.Split(strings.TrimSpace(body), "\n") {
@@ -89,7 +81,7 @@ func allItemsOK(body string) string {
 		}
 		var action map[string]json.RawMessage
 		if err := json.Unmarshal([]byte(line), &action); err != nil {
-			continue // a source line, not an action line
+			continue
 		}
 		for name := range action {
 			switch name {
@@ -105,22 +97,18 @@ func allItemsOK(body string) string {
 
 func newTestSink(t *testing.T, rec *recorder, tune func(*Options)) *Sink {
 	t.Helper()
-
 	server := httptest.NewServer(rec.handler())
 	t.Cleanup(server.Close)
-
 	opts := Options{
-		Addresses: []string{server.URL},
-		Index:     "orders-v1",
-		Workers:   1,
-		// Keep retries instant so tests do not sleep.
+		Addresses:   []string{server.URL},
+		Index:       "orders-v1",
+		Workers:     1,
 		BaseBackoff: time.Millisecond,
 		MaxAttempts: 4,
 	}
 	if tune != nil {
 		tune(&opts)
 	}
-
 	s, err := New(opts)
 	if err != nil {
 		t.Fatalf("new sink: %v", err)
@@ -140,7 +128,6 @@ func tombstone(key string, version uint64) cdc.Doc {
 func TestWriteSendsBulkWithExternalVersioning(t *testing.T) {
 	rec := &recorder{}
 	s := newTestSink(t, rec, nil)
-
 	res, err := s.Write(context.Background(), []cdc.Doc{upsert("42", 1000)})
 	if err != nil {
 		t.Fatalf("write: %v", err)
@@ -148,10 +135,7 @@ func TestWriteSendsBulkWithExternalVersioning(t *testing.T) {
 	if res.Applied != 1 {
 		t.Errorf("applied = %d, want 1", res.Applied)
 	}
-
 	body := rec.allBodies()[0]
-	// External versioning is what makes a replayed older write lose to a newer one
-	// already in the index.
 	if !strings.Contains(body, `"version_type":"external"`) {
 		t.Errorf("bulk action lacks external versioning: %s", body)
 	}
@@ -171,17 +155,15 @@ func TestWriteSendsBulkWithExternalVersioning(t *testing.T) {
 func TestBulkBodyIsNDJSON(t *testing.T) {
 	rec := &recorder{}
 	s := newTestSink(t, rec, nil)
-
 	if _, err := s.Write(context.Background(), []cdc.Doc{upsert("1", 1), upsert("2", 2)}); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-
 	body := rec.allBodies()[0]
 	if !strings.HasSuffix(body, "\n") {
 		t.Error("bulk body must end with a newline")
 	}
 	lines := strings.Split(strings.TrimSuffix(body, "\n"), "\n")
-	if len(lines) != 4 { // action + source, twice
+	if len(lines) != 4 {
 		t.Fatalf("expected 4 lines for 2 documents, got %d: %q", len(lines), body)
 	}
 	for i, line := range lines {
@@ -196,11 +178,9 @@ func TestBulkBodyIsNDJSON(t *testing.T) {
 func TestDeleteIsVersioned(t *testing.T) {
 	rec := &recorder{}
 	s := newTestSink(t, rec, nil)
-
 	if _, err := s.Write(context.Background(), []cdc.Doc{tombstone("42", 2000)}); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-
 	body := rec.allBodies()[0]
 	if !strings.Contains(body, `"delete":`) {
 		t.Errorf("expected a delete action: %s", body)
@@ -208,7 +188,6 @@ func TestDeleteIsVersioned(t *testing.T) {
 	if !strings.Contains(body, `"version":2000`) || !strings.Contains(body, `"version_type":"external"`) {
 		t.Errorf("delete must carry the version: %s", body)
 	}
-	// A delete has no source line.
 	if lines := strings.Split(strings.TrimSuffix(body, "\n"), "\n"); len(lines) != 1 {
 		t.Errorf("expected a single line for a delete, got %d", len(lines))
 	}
@@ -224,7 +203,6 @@ func TestVersionConflictIsCountedAsStale(t *testing.T) {
 		]}`
 	}}
 	s := newTestSink(t, rec, nil)
-
 	res, err := s.Write(context.Background(), []cdc.Doc{upsert("42", 1), upsert("43", 2)})
 	if err != nil {
 		t.Fatalf("a version conflict must not fail the batch: %v", err)
@@ -250,7 +228,6 @@ func TestMappingFailureIsRejectedNotRetried(t *testing.T) {
 		]}`
 	}}
 	s := newTestSink(t, rec, nil)
-
 	res, err := s.Write(context.Background(), []cdc.Doc{upsert("42", 1), upsert("43", 2)})
 	if err != nil {
 		t.Fatalf("one bad document must not fail the batch: %v", err)
@@ -282,7 +259,6 @@ func TestRejectedExecutionIsRetried(t *testing.T) {
 		return 200, allItemsOK(body)
 	}}
 	s := newTestSink(t, rec, nil)
-
 	res, err := s.Write(context.Background(), []cdc.Doc{upsert("42", 1)})
 	if err != nil {
 		t.Fatalf("expected the retry to succeed: %v", err)
@@ -308,7 +284,6 @@ func TestPerItemRejectionIsRetried(t *testing.T) {
 		return 200, `{"took":1,"errors":false,"items":[{"index":{"status":201}}]}`
 	}}
 	s := newTestSink(t, rec, nil)
-
 	res, err := s.Write(context.Background(), []cdc.Doc{upsert("42", 1), upsert("43", 2)})
 	if err != nil {
 		t.Fatalf("write: %v", err)
@@ -316,7 +291,6 @@ func TestPerItemRejectionIsRetried(t *testing.T) {
 	if res.Applied != 2 {
 		t.Errorf("applied = %d, want 2 once the retry succeeded", res.Applied)
 	}
-	// The retry must carry only the document that failed.
 	second := rec.allBodies()[1]
 	if strings.Contains(second, `"_id":"43"`) {
 		t.Errorf("the retry resent an already-applied document: %s", second)
@@ -331,7 +305,6 @@ func TestServerErrorIsRetriedThenFails(t *testing.T) {
 		return 503, `{"error":"unavailable"}`
 	}}
 	s := newTestSink(t, rec, func(o *Options) { o.MaxAttempts = 3 })
-
 	_, err := s.Write(context.Background(), []cdc.Doc{upsert("42", 1)})
 	if err == nil {
 		t.Fatal("expected a persistent 5xx to fail the batch so the checkpoint does not advance")
@@ -348,7 +321,6 @@ func TestRequestLevelBadRequestIsNotRetried(t *testing.T) {
 		return 400, `{"error":{"type":"illegal_argument_exception"}}`
 	}}
 	s := newTestSink(t, rec, nil)
-
 	if _, err := s.Write(context.Background(), []cdc.Doc{upsert("42", 1)}); err == nil {
 		t.Fatal("expected a malformed request to fail")
 	}
@@ -362,7 +334,6 @@ func TestUnauthorizedIsNotRetried(t *testing.T) {
 		return 401, `{"error":"unauthorized"}`
 	}}
 	s := newTestSink(t, rec, nil)
-
 	if _, err := s.Write(context.Background(), []cdc.Doc{upsert("42", 1)}); err == nil {
 		t.Fatal("expected an authentication failure to fail the batch")
 	}
@@ -374,7 +345,6 @@ func TestUnauthorizedIsNotRetried(t *testing.T) {
 func TestWriteOfEmptyBatchDoesNothing(t *testing.T) {
 	rec := &recorder{}
 	s := newTestSink(t, rec, nil)
-
 	res, err := s.Write(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("write: %v", err)
@@ -398,7 +368,6 @@ func TestResultAccountsForEveryDocument(t *testing.T) {
 		]}`
 	}}
 	s := newTestSink(t, rec, nil)
-
 	docs := []cdc.Doc{upsert("1", 1), upsert("2", 2), upsert("3", 3)}
 	res, err := s.Write(context.Background(), docs)
 	if err != nil {
@@ -416,7 +385,6 @@ func TestTruncatedResponseIsAnError(t *testing.T) {
 		return 200, `{"took":1,"errors":false,"items":[{"index":{"status":201}}]}`
 	}}
 	s := newTestSink(t, rec, nil)
-
 	if _, err := s.Write(context.Background(), []cdc.Doc{upsert("1", 1), upsert("2", 2)}); err == nil {
 		t.Fatal("expected a mismatched item count to fail rather than be assumed successful")
 	}
@@ -430,10 +398,8 @@ func TestContextCancellationStopsRetrying(t *testing.T) {
 		o.MaxAttempts = 100
 		o.BaseBackoff = 50 * time.Millisecond
 	})
-
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
 	defer cancel()
-
 	start := time.Now()
 	if _, err := s.Write(ctx, []cdc.Doc{upsert("42", 1)}); err == nil {
 		t.Fatal("expected an error when the context expires")
@@ -468,11 +434,9 @@ func TestWritesTargetTheConcreteIndexNotTheAlias(t *testing.T) {
 		o.Index = "orders-v2"
 		o.Alias = "orders"
 	})
-
 	if _, err := s.Write(context.Background(), []cdc.Doc{upsert("42", 1)}); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-
 	body := rec.allBodies()[0]
 	if !strings.Contains(body, `"_index":"orders-v2"`) {
 		t.Errorf("expected the concrete index: %s", body)
@@ -487,7 +451,6 @@ func TestWritesTargetTheConcreteIndexNotTheAlias(t *testing.T) {
 func TestCompressedBodyIsSentAndUnderstood(t *testing.T) {
 	rec := &recorder{}
 	s := newTestSink(t, rec, func(o *Options) { o.Compress = true })
-
 	res, err := s.Write(context.Background(), []cdc.Doc{upsert("42", 1), upsert("43", 2)})
 	if err != nil {
 		t.Fatalf("write: %v", err)
@@ -495,8 +458,6 @@ func TestCompressedBodyIsSentAndUnderstood(t *testing.T) {
 	if res.Applied != 2 {
 		t.Fatalf("applied = %d, want 2", res.Applied)
 	}
-	// The stub decompresses, so seeing the document proves the body was gzipped
-	// and correctly framed.
 	if body := rec.allBodies()[0]; !strings.Contains(body, `"_id":"42"`) {
 		t.Fatalf("compressed body did not round trip: %q", body)
 	}

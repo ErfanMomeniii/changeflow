@@ -19,17 +19,14 @@ import (
 // still alive and must not be restarted, since restarting it would only make it
 // further behind.
 type Health struct {
-	// Ready reports whether the stream is connected and keeping up. A nil function
-	// means always ready.
 	Ready func() error
 }
 
 // Server exposes metrics and health over HTTP.
 type Server struct {
-	addr   string
-	reg    *prometheus.Registry
-	health Health
-
+	addr     string
+	reg      *prometheus.Registry
+	health   Health
 	mu       sync.Mutex
 	listener net.Listener
 	server   *http.Server
@@ -49,22 +46,14 @@ func (s *Server) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("telemetry: listen on %s: %w", s.addr, err)
 	}
-
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.HandlerFor(s.reg, promhttp.HandlerOpts{
-		// A broken collector should not take the whole endpoint down during an
-		// incident, which is exactly when it is being read.
 		ErrorHandling: promhttp.ContinueOnError,
 	}))
-
-	// Liveness: the process is running and can serve. Deliberately says nothing about
-	// lag, so a backlog cannot trigger a restart loop that prevents recovery.
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 	})
-
-	// Readiness: connected and keeping up.
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
 		if s.health.Ready == nil {
 			w.WriteHeader(http.StatusOK)
@@ -79,19 +68,15 @@ func (s *Server) Start(ctx context.Context) error {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 	})
-
 	server := &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-
 	s.mu.Lock()
 	s.listener, s.server = listener, server
 	s.mu.Unlock()
-
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
-
 	select {
 	case <-ctx.Done():
 		return s.Shutdown()
@@ -119,7 +104,6 @@ func (s *Server) Shutdown() error {
 	s.mu.Lock()
 	server := s.server
 	s.mu.Unlock()
-
 	if server == nil {
 		return nil
 	}

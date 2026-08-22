@@ -10,28 +10,22 @@ import (
 	"testing"
 )
 
-// aliasServer answers alias reads with the given targets and records the actions it is
-// asked to apply.
 type aliasServer struct {
-	mu      sync.Mutex
-	targets []string
-	actions []map[string]map[string]any
-	// readStatus overrides the response to a read, for the failure cases.
-	readStatus int
-	// writeStatus overrides the response to an update.
+	mu          sync.Mutex
+	targets     []string
+	actions     []map[string]map[string]any
+	readStatus  int
 	writeStatus int
 }
 
 func (a *aliasServer) sink(t *testing.T, index, alias string) *Sink {
 	t.Helper()
-
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/_alias/"):
 			a.mu.Lock()
 			status, targets := a.readStatus, append([]string(nil), a.targets...)
 			a.mu.Unlock()
-
 			if status != 0 {
 				w.WriteHeader(status)
 				_, _ = w.Write([]byte(`{"error":"nope"}`))
@@ -47,7 +41,6 @@ func (a *aliasServer) sink(t *testing.T, index, alias string) *Sink {
 				body[target] = map[string]any{"aliases": map[string]any{}}
 			}
 			_ = json.NewEncoder(w).Encode(body)
-
 		case r.Method == http.MethodPost && r.URL.Path == "/_aliases":
 			var request struct {
 				Actions []map[string]map[string]any `json:"actions"`
@@ -56,25 +49,21 @@ func (a *aliasServer) sink(t *testing.T, index, alias string) *Sink {
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
-
 			a.mu.Lock()
 			a.actions = request.Actions
 			status := a.writeStatus
 			a.mu.Unlock()
-
 			if status != 0 {
 				w.WriteHeader(status)
 				_, _ = w.Write([]byte(`{"error":{"type":"index_not_found_exception"}}`))
 				return
 			}
 			_, _ = w.Write([]byte(`{"acknowledged":true}`))
-
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
 	t.Cleanup(server.Close)
-
 	s, err := New(Options{Addresses: []string{server.URL}, Index: index, Alias: alias})
 	if err != nil {
 		t.Fatalf("new sink: %v", err)
@@ -94,11 +83,9 @@ func (a *aliasServer) recorded() []map[string]map[string]any {
 func TestPromoteAliasMovesReadersInOneRequest(t *testing.T) {
 	server := &aliasServer{targets: []string{"orders-v1"}}
 	s := server.sink(t, "orders-v2", "orders")
-
 	if err := s.PromoteAlias(context.Background()); err != nil {
 		t.Fatalf("promote: %v", err)
 	}
-
 	actions := server.recorded()
 	if len(actions) != 2 {
 		t.Fatalf("expected a removal and an addition together, got %d actions: %+v", len(actions), actions)
@@ -115,11 +102,9 @@ func TestPromoteAliasMovesReadersInOneRequest(t *testing.T) {
 func TestPromoteAliasCreatesAMissingAlias(t *testing.T) {
 	server := &aliasServer{}
 	s := server.sink(t, "orders-v1", "orders")
-
 	if err := s.PromoteAlias(context.Background()); err != nil {
 		t.Fatalf("promote: %v", err)
 	}
-
 	actions := server.recorded()
 	if len(actions) != 1 {
 		t.Fatalf("expected only an addition, got %+v", actions)
@@ -134,7 +119,6 @@ func TestPromoteAliasCreatesAMissingAlias(t *testing.T) {
 func TestPromoteAliasIsANoOpWhenAlreadyCorrect(t *testing.T) {
 	server := &aliasServer{targets: []string{"orders-v2"}}
 	s := server.sink(t, "orders-v2", "orders")
-
 	if err := s.PromoteAlias(context.Background()); err != nil {
 		t.Fatalf("promote: %v", err)
 	}
@@ -148,11 +132,9 @@ func TestPromoteAliasIsANoOpWhenAlreadyCorrect(t *testing.T) {
 func TestPromoteAliasRemovesEveryOtherTarget(t *testing.T) {
 	server := &aliasServer{targets: []string{"orders-v1", "orders-v2", "orders-v3"}}
 	s := server.sink(t, "orders-v3", "orders")
-
 	if err := s.PromoteAlias(context.Background()); err != nil {
 		t.Fatalf("promote: %v", err)
 	}
-
 	actions := server.recorded()
 	var removed []string
 	for _, action := range actions {
@@ -175,7 +157,6 @@ func TestPromoteAliasRemovesEveryOtherTarget(t *testing.T) {
 func TestPromoteAliasRefusesWhenAliasEqualsIndex(t *testing.T) {
 	server := &aliasServer{}
 	s := server.sink(t, "orders", "orders")
-
 	if err := s.PromoteAlias(context.Background()); err == nil {
 		t.Fatal("expected an alias equal to the index name to be refused")
 	}
@@ -184,7 +165,6 @@ func TestPromoteAliasRefusesWhenAliasEqualsIndex(t *testing.T) {
 func TestPromoteAliasWithoutAnAliasConfiguredDoesNothing(t *testing.T) {
 	server := &aliasServer{targets: []string{"orders-v1"}}
 	s := server.sink(t, "orders-v1", "")
-
 	if err := s.PromoteAlias(context.Background()); err != nil {
 		t.Fatalf("promote: %v", err)
 	}
@@ -196,7 +176,6 @@ func TestPromoteAliasWithoutAnAliasConfiguredDoesNothing(t *testing.T) {
 func TestPromoteAliasReportsAFailedMove(t *testing.T) {
 	server := &aliasServer{targets: []string{"orders-v1"}, writeStatus: http.StatusNotFound}
 	s := server.sink(t, "orders-v2", "orders")
-
 	err := s.PromoteAlias(context.Background())
 	if err == nil {
 		t.Fatal("expected a failed move to be reported")
@@ -211,7 +190,6 @@ func TestPromoteAliasReportsAFailedMove(t *testing.T) {
 func TestPromoteAliasStopsWhenTheAliasCannotBeRead(t *testing.T) {
 	server := &aliasServer{readStatus: http.StatusInternalServerError}
 	s := server.sink(t, "orders-v2", "orders")
-
 	if err := s.PromoteAlias(context.Background()); err == nil {
 		t.Fatal("expected an unreadable alias to stop the promotion")
 	}

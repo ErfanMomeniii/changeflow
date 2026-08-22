@@ -33,8 +33,6 @@ CREATE TABLE IF NOT EXISTS %s (
     updated_at          TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB`
 
-// maxStreamNameLen matches the stream column and leaves room for the lock name
-// prefix, since MySQL lock names are limited to 64 characters.
 const maxStreamNameLen = 48
 
 // MySQLStore keeps checkpoints in a MySQL table. Putting them in a replicated,
@@ -59,8 +57,6 @@ func NewMySQLStore(db *sql.DB, table string) (*MySQLStore, error) {
 	return &MySQLStore{db: db, table: table, LockTimeout: 10 * time.Second}, nil
 }
 
-// validateIdentifier permits only a plain or qualified identifier, so nothing a
-// caller supplies can alter the shape of a statement.
 func validateIdentifier(name string) error {
 	if name == "" {
 		return errors.New("checkpoint: table name is empty")
@@ -94,13 +90,9 @@ func (s *MySQLStore) EnsureSchema(ctx context.Context) error {
 	return nil
 }
 
-// schemaExists reports whether the table can be read. It asks for no rows, so the answer
-// costs nothing and needs only the SELECT the store uses anyway.
 func (s *MySQLStore) schemaExists(ctx context.Context) bool {
 	var one int
 	err := s.db.QueryRowContext(ctx, fmt.Sprintf("SELECT 1 FROM %s WHERE 1=0", s.table)).Scan(&one)
-	// No rows means the query ran, which means the table is there. Any error is treated as
-	// absent, leaving the attempt to create it to report what is actually wrong.
 	return errors.Is(err, sql.ErrNoRows)
 }
 
@@ -109,7 +101,6 @@ func (s *MySQLStore) schemaExists(ctx context.Context) bool {
 // run is a normal thing to want, while a vanished table is not.
 var ErrNotInitialized = errors.New("checkpoint table does not exist")
 
-// missingTableCode is MySQL's ER_NO_SUCH_TABLE.
 const missingTableCode = 1146
 
 func asMissingTable(err error) error {
@@ -128,7 +119,6 @@ func (s *MySQLStore) Load(ctx context.Context, stream string) (Checkpoint, error
 		       snapshot_rows_total, seq_watermark, last_event_ts_ms,
 		       COALESCE(last_error,''), schema_version, updated_at
 		FROM %s WHERE stream = ?`, s.table)
-
 	var (
 		cp        Checkpoint
 		updatedAt any
@@ -153,16 +143,12 @@ func (s *MySQLStore) Load(ctx context.Context, stream string) (Checkpoint, error
 	} else {
 		cp.UpdatedAt = ts
 	}
-
-	// A row written by a newer changeflow may use fields this build does not know
-	// about, so refuse it instead of acting on a partial understanding.
 	if cp.SchemaVersion > SchemaVersion {
 		return Checkpoint{}, fmt.Errorf("checkpoint: stream %s was written with schema version %d, this build understands %d", stream, cp.SchemaVersion, SchemaVersion)
 	}
 	return cp, nil
 }
 
-// parseTimestamp accepts either form the driver may produce for a TIMESTAMP.
 func parseTimestamp(v any) (time.Time, error) {
 	switch x := v.(type) {
 	case nil:
@@ -203,7 +189,6 @@ func (s *MySQLStore) Save(ctx context.Context, cp Checkpoint) error {
 	if cp.SchemaVersion == 0 {
 		cp.SchemaVersion = SchemaVersion
 	}
-
 	q := fmt.Sprintf(`
 		INSERT INTO %s (stream, gtid_set, snapshot_done, snapshot_start_gtid,
 		                snapshot_cursor, snapshot_base_seq, snapshot_rows_done,
@@ -222,7 +207,6 @@ func (s *MySQLStore) Save(ctx context.Context, cp Checkpoint) error {
 		    last_event_ts_ms = VALUES(last_event_ts_ms),
 		    last_error = VALUES(last_error),
 		    schema_version = VALUES(schema_version)`, s.table)
-
 	if _, err := s.db.ExecContext(ctx, q,
 		cp.Stream, cp.GTIDSet, cp.SnapshotDone, cp.SnapshotStartGTID,
 		cp.SnapshotCursor, cp.SnapshotBaseSeq, cp.SnapshotRowsDone,
@@ -234,8 +218,6 @@ func (s *MySQLStore) Save(ctx context.Context, cp Checkpoint) error {
 	return nil
 }
 
-// maxRecordedErrorLen bounds what is stored, so a driver error carrying a whole payload
-// cannot fill the column or the screen.
 const maxRecordedErrorLen = 1000
 
 // RecordError stores why a stream stopped, or clears it when given an empty reason.
@@ -250,12 +232,10 @@ func (s *MySQLStore) RecordError(ctx context.Context, stream, reason string) err
 	if len(reason) > maxRecordedErrorLen {
 		reason = reason[:maxRecordedErrorLen] + "…"
 	}
-
 	var value any
 	if reason != "" {
 		value = reason
 	}
-
 	q := fmt.Sprintf("UPDATE %s SET last_error = ? WHERE stream = ?", s.table)
 	if _, err := s.db.ExecContext(ctx, q, value, stream); err != nil {
 		return fmt.Errorf("checkpoint: record the error for %s: %w", stream, err)
@@ -270,7 +250,6 @@ func (s *MySQLStore) List(ctx context.Context) ([]Checkpoint, error) {
 		return nil, fmt.Errorf("checkpoint: list: %w", err)
 	}
 	defer rows.Close()
-
 	var streams []string
 	for rows.Next() {
 		var name string
@@ -282,7 +261,6 @@ func (s *MySQLStore) List(ctx context.Context) ([]Checkpoint, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-
 	out := make([]Checkpoint, 0, len(streams))
 	for _, name := range streams {
 		cp, err := s.Load(ctx, name)
@@ -324,18 +302,15 @@ func (s *MySQLStore) Lock(ctx context.Context, stream string) (*StreamLock, erro
 	if err := validateStream(stream); err != nil {
 		return nil, err
 	}
-
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("checkpoint: pin connection for stream lock: %w", err)
 	}
-
 	name := "changeflow:" + stream
 	waitSeconds := int(s.LockTimeout.Round(time.Second) / time.Second)
 	if waitSeconds < 0 {
 		waitSeconds = 0
 	}
-
 	var got sql.NullInt64
 	if err := conn.QueryRowContext(ctx, "SELECT GET_LOCK(?, ?)", name, waitSeconds).Scan(&got); err != nil {
 		conn.Close()
@@ -350,7 +325,6 @@ func (s *MySQLStore) Lock(ctx context.Context, stream string) (*StreamLock, erro
 		conn.Close()
 		return nil, fmt.Errorf("%w: %s still holds %s after waiting %s", ErrStreamLocked, holder, stream, s.LockTimeout)
 	}
-
 	return &StreamLock{conn: conn, name: name, stream: stream}, nil
 }
 

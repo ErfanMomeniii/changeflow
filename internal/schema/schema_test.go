@@ -34,7 +34,6 @@ func names(cols []Column) []string {
 
 func TestColumnLookupIgnoresCase(t *testing.T) {
 	m := ordersMeta()
-
 	if _, ok := m.Column("STATUS"); !ok {
 		t.Error("expected a case-insensitive lookup to succeed")
 	}
@@ -57,7 +56,6 @@ func TestPrimaryKeyPositions(t *testing.T) {
 // has to say so rather than failing later on a duplicate.
 func TestPrimaryKeyPositionsExplainsMissingKey(t *testing.T) {
 	m := &TableMeta{Schema: "shop", Table: "audit_log", Columns: []Column{{Name: "actor"}}}
-
 	_, err := m.PrimaryKeyPositions()
 	if err == nil {
 		t.Fatal("expected an error for a table with no primary key")
@@ -79,7 +77,6 @@ func TestResolveKeyFallsBackToPrimaryKey(t *testing.T) {
 
 func TestResolveKeyRejectsUnusableKeys(t *testing.T) {
 	m := ordersMeta()
-
 	for _, tc := range []struct {
 		name string
 		key  []string
@@ -87,9 +84,7 @@ func TestResolveKeyRejectsUnusableKeys(t *testing.T) {
 	}{
 		{"missing column", []string{"nope"}, "does not exist"},
 		{"duplicate column", []string{"id", "id"}, "twice"},
-		// A generated column is absent from row images, so it can never key a row.
 		{"generated column", []string{"total_with_tax"}, "generated"},
-		// A null cannot identify anything.
 		{"nullable column", []string{"note"}, "null"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -114,7 +109,6 @@ func TestResolveKeyAcceptsCompositeKey(t *testing.T) {
 		PrimaryKey: []string{"order_id", "sku"},
 	}
 	m.index()
-
 	got, err := m.ResolveKey(nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -180,7 +174,6 @@ func TestSelectColumnsHonoursExclude(t *testing.T) {
 // column is a configuration error rather than a preference.
 func TestSelectColumnsRefusesToDropKeyColumns(t *testing.T) {
 	m := ordersMeta()
-
 	if _, err := m.SelectColumns([]string{"status", "note"}, nil, []string{"id"}); err == nil {
 		t.Error("expected include without the key column to be rejected")
 	}
@@ -191,7 +184,6 @@ func TestSelectColumnsRefusesToDropKeyColumns(t *testing.T) {
 
 func TestSelectColumnsRejectsUnknownNames(t *testing.T) {
 	m := ordersMeta()
-
 	if _, err := m.SelectColumns([]string{"id", "nope"}, nil, []string{"id"}); err == nil {
 		t.Error("expected an unknown include column to be rejected")
 	}
@@ -215,9 +207,7 @@ func TestParseMemberList(t *testing.T) {
 	}{
 		{"simple enum", "enum('draft','paid','shipped')", "enum", []string{"draft", "paid", "shipped"}},
 		{"simple set", "set('web','ios')", "set", []string{"web", "ios"}},
-		// A label may contain a comma, so splitting on commas would be wrong.
 		{"label with comma", "enum('a,b','c')", "enum", []string{"a,b", "c"}},
-		// MySQL doubles an embedded quote.
 		{"label with quote", "enum('it''s','other')", "enum", []string{"it's", "other"}},
 		{"label with parenthesis", "enum('a(1)','b')", "enum", []string{"a(1)", "b"}},
 		{"empty label", "enum('','x')", "enum", []string{"", "x"}},
@@ -237,7 +227,6 @@ func TestParseMemberList(t *testing.T) {
 	}
 }
 
-// fakeLoader counts loads so caching can be asserted.
 type fakeLoader struct {
 	loads int
 	meta  *TableMeta
@@ -257,13 +246,11 @@ func (f *fakeLoader) Load(context.Context, string, string) (*TableMeta, error) {
 func TestStoreCachesDefinitions(t *testing.T) {
 	loader := &fakeLoader{meta: ordersMeta()}
 	store := NewStore(loader)
-
 	for i := 0; i < 5; i++ {
 		if _, err := store.Table(t.Context(), "shop", "orders"); err != nil {
 			t.Fatalf("table: %v", err)
 		}
 	}
-
 	if loader.loads != 1 {
 		t.Fatalf("expected 1 load for 5 lookups, got %d", loader.loads)
 	}
@@ -272,14 +259,12 @@ func TestStoreCachesDefinitions(t *testing.T) {
 func TestStoreLookupIgnoresCase(t *testing.T) {
 	loader := &fakeLoader{meta: ordersMeta()}
 	store := NewStore(loader)
-
 	if _, err := store.Table(t.Context(), "shop", "orders"); err != nil {
 		t.Fatalf("table: %v", err)
 	}
 	if _, err := store.Table(t.Context(), "SHOP", "ORDERS"); err != nil {
 		t.Fatalf("table: %v", err)
 	}
-
 	if loader.loads != 1 {
 		t.Fatalf("expected the cache to be case-insensitive, got %d loads", loader.loads)
 	}
@@ -290,7 +275,6 @@ func TestStoreLookupIgnoresCase(t *testing.T) {
 func TestStoreInvalidateForcesReload(t *testing.T) {
 	loader := &fakeLoader{meta: ordersMeta()}
 	store := NewStore(loader)
-
 	if _, err := store.Table(t.Context(), "shop", "orders"); err != nil {
 		t.Fatalf("table: %v", err)
 	}
@@ -298,7 +282,6 @@ func TestStoreInvalidateForcesReload(t *testing.T) {
 	if _, err := store.Table(t.Context(), "shop", "orders"); err != nil {
 		t.Fatalf("table: %v", err)
 	}
-
 	if loader.loads != 2 {
 		t.Fatalf("expected a reload after invalidation, got %d loads", loader.loads)
 	}
@@ -310,12 +293,10 @@ func TestStoreInvalidateForcesReload(t *testing.T) {
 func TestStoreInvalidateAllClearsCache(t *testing.T) {
 	loader := &fakeLoader{meta: ordersMeta()}
 	store := NewStore(loader)
-
 	if _, err := store.Table(t.Context(), "shop", "orders"); err != nil {
 		t.Fatalf("table: %v", err)
 	}
 	store.InvalidateAll()
-
 	if store.Cached() != 0 {
 		t.Fatalf("expected an empty cache, got %d entries", store.Cached())
 	}
@@ -326,14 +307,12 @@ func TestStoreInvalidateAllClearsCache(t *testing.T) {
 func TestStoreDoesNotCacheFailures(t *testing.T) {
 	loader := &fakeLoader{err: errors.New("connection reset")}
 	store := NewStore(loader)
-
 	if _, err := store.Table(t.Context(), "shop", "orders"); err == nil {
 		t.Fatal("expected the load error to surface")
 	}
 	if store.Cached() != 0 {
 		t.Fatal("a failed load must not be cached")
 	}
-
 	loader.err = nil
 	loader.meta = ordersMeta()
 	if _, err := store.Table(t.Context(), "shop", "orders"); err != nil {

@@ -1,11 +1,3 @@
-// Package schema discovers what a MySQL table looks like and how its columns map
-// onto destination types.
-//
-// Column metadata comes from two places that must agree: information_schema, read
-// at startup and after DDL, and the binlog's own table map events. The binlog is
-// authoritative for row decoding because it describes the rows as they were
-// written, while information_schema supplies what the binlog omits - character
-// sets, generated columns, and exact numeric precision.
 package schema
 
 import (
@@ -15,45 +7,29 @@ import (
 
 // Column is one column of a table.
 type Column struct {
-	// Name as declared.
-	Name string
-	// Position is the column's ordinal, counting from zero, matching the order
-	// values appear in a binlog row.
-	Position int
-	// DataType is the bare type, such as "bigint" or "varchar".
-	DataType string
-	// ColumnType is the full declaration, such as "bigint(20) unsigned" or
-	// "enum('a','b')", which is the only place some details appear.
-	ColumnType string
-
-	Unsigned  bool
-	Nullable  bool
-	Generated bool
-
-	CharacterSet string
-	Collation    string
-
+	Name              string
+	Position          int
+	DataType          string
+	ColumnType        string
+	Unsigned          bool
+	Nullable          bool
+	Generated         bool
+	CharacterSet      string
+	Collation         string
 	NumericPrecision  int
 	NumericScale      int
 	DateTimePrecision int
-
-	// EnumValues and SetValues are member labels in declaration order. The binlog
-	// carries only a member number or bitmask, so these are what make a value
-	// meaningful.
-	EnumValues []string
-	SetValues  []string
+	EnumValues        []string
+	SetValues         []string
 }
 
 // TableMeta describes one table.
 type TableMeta struct {
-	Schema  string
-	Table   string
-	Columns []Column
-	// PrimaryKey holds the primary key column names in key order. Empty means the
-	// table has none, which makes idempotent replication impossible.
+	Schema     string
+	Table      string
+	Columns    []Column
 	PrimaryKey []string
-
-	byName map[string]int
+	byName     map[string]int
 }
 
 // Name returns the qualified table name.
@@ -108,7 +84,6 @@ func (t *TableMeta) ResolveKey(configured []string) ([]string, error) {
 		}
 		return t.PrimaryKey, nil
 	}
-
 	seen := make(map[string]bool, len(configured))
 	for _, name := range configured {
 		c, ok := t.Column(name)
@@ -138,12 +113,10 @@ func (t *TableMeta) SelectColumns(include, exclude, key []string) ([]Column, err
 	if len(include) > 0 && len(exclude) > 0 {
 		return nil, fmt.Errorf("table %s: include and exclude cannot both be set", t.Name())
 	}
-
 	inKey := make(map[string]bool, len(key))
 	for _, k := range key {
 		inKey[strings.ToLower(k)] = true
 	}
-
 	var chosen []Column
 	switch {
 	case len(include) > 0:
@@ -164,7 +137,6 @@ func (t *TableMeta) SelectColumns(include, exclude, key []string) ([]Column, err
 				chosen = append(chosen, c)
 			}
 		}
-
 	case len(exclude) > 0:
 		unwanted := make(map[string]bool, len(exclude))
 		for _, name := range exclude {
@@ -181,17 +153,13 @@ func (t *TableMeta) SelectColumns(include, exclude, key []string) ([]Column, err
 				chosen = append(chosen, c)
 			}
 		}
-
 	default:
 		for _, c := range t.Columns {
-			// Generated columns never appear in a row image, so including them by
-			// default would write nulls.
 			if !c.Generated {
 				chosen = append(chosen, c)
 			}
 		}
 	}
-
 	if len(chosen) == 0 {
 		return nil, fmt.Errorf("table %s: the mapping selects no columns", t.Name())
 	}

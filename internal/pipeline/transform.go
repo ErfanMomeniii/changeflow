@@ -1,4 +1,3 @@
-// Package pipeline turns source events into destination writes.
 package pipeline
 
 import (
@@ -29,50 +28,36 @@ const (
 	DialectClickHouse
 )
 
-// maxKeyBytes is Elasticsearch's limit on a document id. Longer keys are digested
-// rather than allowed to fail on every write.
 const maxKeyBytes = 512
 
-// Zero-date policies.
 const (
 	zeroDateNull  = "null"
 	zeroDateEpoch = "epoch"
 	zeroDateError = "error"
 )
 
-// field is one column, prepared for encoding.
 type field struct {
-	// position is the column's index in a row.
-	position int
-	// name is what the destination sees, after any rename.
-	name string
-	kind schema.Kind
-	// jsonKey is the encoded object key including its quotes and colon, built once
-	// so it is not re-escaped per row.
-	jsonKey []byte
-
-	enumLabels []string
-	setLabels  []string
-	// needsCharsetConversion marks a column whose bytes are not UTF-8.
+	position               int
+	name                   string
+	kind                   schema.Kind
+	jsonKey                []byte
+	enumLabels             []string
+	setLabels              []string
 	needsCharsetConversion bool
-	// timePrecision is the column's fractional-second precision.
-	timePrecision int
+	timePrecision          int
 }
 
 // Plan is a compiled mapping: the work of deciding which columns to write, what to
 // call them, and how to encode each one is done once, not per row.
 type Plan struct {
-	meta    *schema.TableMeta
-	dialect Dialect
-	// sourceZone interprets DATETIME, which carries no zone of its own.
+	meta         *schema.TableMeta
+	dialect      Dialect
 	sourceZone   *time.Location
 	zeroDate     string
 	fields       []field
 	keyPositions []int
 	keyNames     []string
-	// keyFields are the subset of fields forming the key, used to build a tombstone
-	// for a destination that expresses deletion as a row rather than as an operation.
-	keyFields []field
+	keyFields    []field
 }
 
 // Compile prepares a mapping for one table and destination, rejecting anything
@@ -91,7 +76,6 @@ func Compile(meta *schema.TableMeta, mapping config.Mapping, dialect Dialect, so
 	default:
 		return nil, fmt.Errorf("transform: unknown zero-date policy %q", zeroDate)
 	}
-
 	key, err := meta.ResolveKey(mapping.Key)
 	if err != nil {
 		return nil, err
@@ -100,7 +84,6 @@ func Compile(meta *schema.TableMeta, mapping config.Mapping, dialect Dialect, so
 	if err != nil {
 		return nil, err
 	}
-
 	p := &Plan{
 		meta:       meta,
 		dialect:    dialect,
@@ -108,18 +91,15 @@ func Compile(meta *schema.TableMeta, mapping config.Mapping, dialect Dialect, so
 		zeroDate:   zeroDate,
 		keyNames:   key,
 	}
-
 	for _, c := range selected {
 		mapped, err := schema.Map(c)
 		if err != nil {
 			return nil, fmt.Errorf("transform: %w", err)
 		}
-
 		needsConversion, err := charsetNeedsConversion(c)
 		if err != nil {
 			return nil, fmt.Errorf("transform: %w", err)
 		}
-
 		name := c.Name
 		if renamed, ok := mapping.Rename[c.Name]; ok && renamed != "" {
 			name = renamed
@@ -128,7 +108,6 @@ func Compile(meta *schema.TableMeta, mapping config.Mapping, dialect Dialect, so
 		if err != nil {
 			return nil, fmt.Errorf("transform: encode field name %q: %w", name, err)
 		}
-
 		p.fields = append(p.fields, field{
 			position:               c.Position,
 			name:                   name,
@@ -140,14 +119,12 @@ func Compile(meta *schema.TableMeta, mapping config.Mapping, dialect Dialect, so
 			timePrecision:          c.DateTimePrecision,
 		})
 	}
-
 	for _, name := range key {
 		c, ok := meta.Column(name)
 		if !ok {
 			return nil, fmt.Errorf("transform: key column %q is not in table %s", name, meta.Name())
 		}
 		p.keyPositions = append(p.keyPositions, c.Position)
-
 		for _, f := range p.fields {
 			if f.position == c.Position {
 				p.keyFields = append(p.keyFields, f)
@@ -155,18 +132,12 @@ func Compile(meta *schema.TableMeta, mapping config.Mapping, dialect Dialect, so
 			}
 		}
 	}
-
 	if dialect == DialectClickHouse && len(p.keyFields) != len(key) {
-		// A tombstone carries the key and nothing else, so every key column has to be
-		// among the written fields.
 		return nil, fmt.Errorf("transform: table %s: every key column must be written for a ClickHouse destination, since a delete is expressed as a row carrying the key", meta.Name())
 	}
-
 	return p, nil
 }
 
-// charsetNeedsConversion reports whether a column's bytes need transcoding, and
-// refuses charsets changeflow cannot convert rather than emitting invalid UTF-8.
 func charsetNeedsConversion(c schema.Column) (bool, error) {
 	switch strings.ToLower(c.CharacterSet) {
 	case "", "utf8", "utf8mb3", "utf8mb4", "ascii", "binary":
@@ -198,21 +169,16 @@ func (p *Plan) Apply(ev *cdc.ChangeEvent) ([]cdc.Doc, error) {
 	if ev == nil {
 		return nil, fmt.Errorf("transform: nil event")
 	}
-
 	values := ev.Values()
 	if err := p.checkWidth(values); err != nil {
 		return nil, err
 	}
-
 	if ev.Operation == cdc.OperationDelete {
 		key, err := p.key(values)
 		if err != nil {
 			return nil, err
 		}
 		doc := cdc.Doc{Key: key, Version: ev.Seq, Deleted: true}
-		// Elasticsearch deletes by identifier, so it needs no body. ClickHouse has no
-		// delete: the row is superseded by a tombstone carrying its key, so the key
-		// values have to travel with it.
 		if p.dialect == DialectClickHouse {
 			body, err := p.encodeFields(p.keyFields, values)
 			if err != nil {
@@ -222,7 +188,6 @@ func (p *Plan) Apply(ev *cdc.ChangeEvent) ([]cdc.Doc, error) {
 		}
 		return []cdc.Doc{doc}, nil
 	}
-
 	newKey, err := p.key(ev.After)
 	if err != nil {
 		return nil, err
@@ -231,7 +196,6 @@ func (p *Plan) Apply(ev *cdc.ChangeEvent) ([]cdc.Doc, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	if ev.Operation == cdc.OperationUpdate && ev.Before != nil {
 		if err := p.checkWidth(ev.Before); err != nil {
 			return nil, err
@@ -247,7 +211,6 @@ func (p *Plan) Apply(ev *cdc.ChangeEvent) ([]cdc.Doc, error) {
 			}, nil
 		}
 	}
-
 	return []cdc.Doc{{Key: newKey, Version: ev.Seq, Body: body}}, nil
 }
 
@@ -262,8 +225,6 @@ func (p *Plan) checkWidth(row cdc.Row) error {
 	return nil
 }
 
-// key builds the destination identity. Parts are escaped before being joined so
-// that no two distinct keys can produce the same string.
 func (p *Plan) key(row cdc.Row) (string, error) {
 	var b strings.Builder
 	for i, pos := range p.keyPositions {
@@ -279,10 +240,8 @@ func (p *Plan) key(row cdc.Row) (string, error) {
 		}
 		b.WriteString(escapeKeyPart(keyString(v)))
 	}
-
 	key := b.String()
 	if len(key) > maxKeyBytes {
-		// A digest keeps the write working and stays stable for the same input.
 		sum := sha256.Sum256([]byte(key))
 		return "h" + hex.EncodeToString(sum[:]), nil
 	}
@@ -306,8 +265,6 @@ func keyString(v any) string {
 	}
 }
 
-// escapeKeyPart percent-encodes everything outside an unreserved set, so the
-// separator cannot appear inside a part.
 func escapeKeyPart(s string) string {
 	const hexDigits = "0123456789ABCDEF"
 	var b strings.Builder
@@ -326,8 +283,6 @@ func escapeKeyPart(s string) string {
 	return b.String()
 }
 
-// encode writes the document body. Each value is encoded exactly once here; the
-// sinks concatenate these bytes rather than re-marshalling them.
 func (p *Plan) encode(row cdc.Row) ([]byte, error) {
 	return p.encodeFields(p.fields, row)
 }
@@ -335,30 +290,24 @@ func (p *Plan) encode(row cdc.Row) ([]byte, error) {
 func (p *Plan) encodeFields(fields []field, row cdc.Row) ([]byte, error) {
 	buf := make([]byte, 0, 256)
 	buf = append(buf, '{')
-
 	for i, f := range fields {
 		if i > 0 {
 			buf = append(buf, ',')
 		}
 		buf = append(buf, f.jsonKey...)
-
 		var err error
 		buf, err = p.encodeValue(buf, f, row[f.position])
 		if err != nil {
 			return nil, err
 		}
 	}
-
 	return append(buf, '}'), nil
 }
 
-// encodeValue appends one value in its destination form. Each kind is encoded by its own
-// appender below; this only chooses between them.
 func (p *Plan) encodeValue(buf []byte, f field, v any) ([]byte, error) {
 	if v == nil {
 		return append(buf, "null"...), nil
 	}
-
 	switch f.kind {
 	case schema.KindBool:
 		return appendBool(buf, f, v)
@@ -412,7 +361,6 @@ func appendInt(buf []byte, f field, v any) ([]byte, error) {
 func appendUint(buf []byte, f field, v any) ([]byte, error) {
 	switch x := v.(type) {
 	case uint64:
-		// Appended as digits, never via a float, so values above 2^53 stay exact.
 		return strconv.AppendUint(buf, x, 10), nil
 	case int64:
 		if x < 0 {
@@ -444,8 +392,6 @@ func (p *Plan) appendDecimal(buf []byte, f field, v any) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("transform: field %s: %w", f.name, err)
 	}
-	// Quoted for Elasticsearch, which has no exact decimal type and would
-	// otherwise round the value; bare for ClickHouse, whose column is exact.
 	if p.dialect == DialectElasticsearch {
 		return appendJSONString(buf, text), nil
 	}
@@ -459,7 +405,6 @@ func appendEnum(buf []byte, f field, v any) ([]byte, error) {
 	}
 	switch {
 	case n == 0:
-		// MySQL's marker for a value that failed validation.
 		return appendJSONString(buf, ""), nil
 	case n >= 1 && int(n) <= len(f.enumLabels):
 		return appendJSONString(buf, f.enumLabels[n-1]), nil
@@ -468,13 +413,11 @@ func appendEnum(buf []byte, f field, v any) ([]byte, error) {
 	}
 }
 
-// appendSet writes a set column as an array of the labels its bitmask selects.
 func appendSet(buf []byte, f field, v any) ([]byte, error) {
 	bits, ok := asInt(v)
 	if !ok {
 		return nil, fmt.Errorf("transform: field %s expected a set bitmask, got %T", f.name, v)
 	}
-
 	buf = append(buf, '[')
 	first := true
 	for i, label := range f.setLabels {
@@ -490,8 +433,6 @@ func appendSet(buf []byte, f field, v any) ([]byte, error) {
 	return append(buf, ']'), nil
 }
 
-// appendRawJSON passes a JSON column through unchanged: re-encoding could reorder keys or
-// lose numeric precision that the source preserved.
 func appendRawJSON(buf []byte, f field, v any) ([]byte, error) {
 	var raw []byte
 	switch x := v.(type) {
@@ -502,7 +443,6 @@ func appendRawJSON(buf []byte, f field, v any) ([]byte, error) {
 	default:
 		return nil, fmt.Errorf("transform: field %s expected a JSON document, got %T", f.name, v)
 	}
-
 	if len(raw) == 0 {
 		return append(buf, "null"...), nil
 	}
@@ -528,7 +468,6 @@ func appendString(buf []byte, f field, v any) ([]byte, error) {
 	return appendJSONString(buf, text), nil
 }
 
-// stringValue converts a column's bytes to UTF-8 text.
 func stringValue(f field, v any) (string, error) {
 	var raw string
 	switch x := v.(type) {
@@ -539,10 +478,7 @@ func stringValue(f field, v any) (string, error) {
 	default:
 		return "", fmt.Errorf("transform: field %s expected text, got %T", f.name, v)
 	}
-
 	if f.needsCharsetConversion {
-		// In latin1 every byte is its own code point, so the conversion is a
-		// widening rather than a table lookup.
 		var b strings.Builder
 		b.Grow(len(raw) + 8)
 		for i := 0; i < len(raw); i++ {
@@ -550,7 +486,6 @@ func stringValue(f field, v any) (string, error) {
 		}
 		return b.String(), nil
 	}
-
 	if !utf8.ValidString(raw) {
 		return "", fmt.Errorf("transform: field %s holds bytes that are not valid UTF-8 (%s); its declared character set claims otherwise",
 			f.name, hex.EncodeToString([]byte(raw)))
@@ -558,16 +493,10 @@ func stringValue(f field, v any) (string, error) {
 	return raw, nil
 }
 
-// appendTime renders a temporal value as RFC 3339 in UTC.
-//
-// A DATETIME is wall-clock text with no zone, so it is interpreted in the source's
-// zone. A TIMESTAMP is already an instant in UTC, and converting it again would
-// shift it.
 func (p *Plan) appendTime(buf []byte, f field, v any) ([]byte, error) {
 	switch x := v.(type) {
 	case time.Time:
 		return appendJSONString(buf, x.UTC().Format(time.RFC3339Nano)), nil
-
 	case string:
 		if isZeroDate(x) {
 			switch p.zeroDate {
@@ -579,10 +508,8 @@ func (p *Plan) appendTime(buf []byte, f field, v any) ([]byte, error) {
 				return nil, fmt.Errorf("transform: field %s holds the zero date %q, which no destination can represent; set mapping.on_zero_date to null or epoch to accept it", f.name, x)
 			}
 		}
-
 		zone := p.sourceZone
 		if f.kind == schema.KindTimestamp {
-			// Already UTC as stored by MySQL.
 			zone = time.UTC
 		}
 		parsed, err := parseMySQLTime(x, zone)
@@ -590,7 +517,6 @@ func (p *Plan) appendTime(buf []byte, f field, v any) ([]byte, error) {
 			return nil, fmt.Errorf("transform: field %s: %w", f.name, err)
 		}
 		return appendJSONString(buf, parsed.UTC().Format(time.RFC3339Nano)), nil
-
 	default:
 		return nil, fmt.Errorf("transform: field %s expected a date or time, got %T", f.name, v)
 	}
@@ -617,8 +543,6 @@ func parseMySQLTime(s string, zone *time.Location) (time.Time, error) {
 func decimalText(v any) (string, error) {
 	switch x := v.(type) {
 	case decimal.Decimal:
-		// Printed at the scale the column declares, so a trailing zero survives:
-		// as a keyword term, "19.9" and "19.90" are different values.
 		places := -x.Exponent()
 		if places < 0 {
 			places = 0
@@ -629,8 +553,6 @@ func decimalText(v any) (string, error) {
 	case []byte:
 		return string(x), nil
 	case float64:
-		// A float has already lost exactness, but refusing the write would be worse
-		// than recording what arrived.
 		return strconv.FormatFloat(x, 'f', -1, 64), nil
 	default:
 		return "", fmt.Errorf("expected an exact decimal, got %T", v)
@@ -664,8 +586,6 @@ func asInt(v any) (int64, bool) {
 	}
 }
 
-// appendJSONString writes a quoted, escaped string without allocating an
-// intermediate value.
 func appendJSONString(buf []byte, s string) []byte {
 	buf = append(buf, '"')
 	for i := 0; i < len(s); i++ {

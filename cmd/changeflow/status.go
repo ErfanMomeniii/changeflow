@@ -16,7 +16,6 @@ import (
 
 func newStatusCmd() *cobra.Command {
 	var path, dlqDir string
-
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Report each stream's position, lag, snapshot state, and refused documents",
@@ -25,7 +24,6 @@ func newStatusCmd() *cobra.Command {
 			return showStatus(cmd.Context(), path, dlqDir)
 		},
 	}
-
 	configFlag(cmd, &path)
 	cmd.Flags().StringVar(&dlqDir, "dlq-dir", "", "also report how many documents each stream has had refused")
 	return cmd
@@ -36,25 +34,17 @@ func showStatus(ctx context.Context, path, dlqDir string) error {
 	if err != nil {
 		return err
 	}
-
-	// Status reads the checkpoint table rather than asking a running process, so it
-	// works when a stream is down, which is when it is needed most.
 	db, err := open(ctx, cfg.Checkpoint.DSN)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-
 	store, err := checkpoint.NewMySQLStore(db, cfg.Checkpoint.Table)
 	if err != nil {
 		return err
 	}
-
 	table := statusTable{dlqDir: dlqDir}
 	table.header()
-
-	// Before any stream has run the table does not exist yet, which is worth
-	// reporting plainly rather than as a failure.
 	if _, err := store.Load(ctx, cfg.StreamNames()[0]); errors.Is(err, checkpoint.ErrNotInitialized) {
 		for _, name := range cfg.StreamNames() {
 			if err := table.row(name, "-", "not started", "-"); err != nil {
@@ -63,7 +53,6 @@ func showStatus(ctx context.Context, path, dlqDir string) error {
 		}
 		return nil
 	}
-
 	now := time.Now()
 	for _, name := range cfg.StreamNames() {
 		cp, err := store.Load(ctx, name)
@@ -76,21 +65,16 @@ func showStatus(ctx context.Context, path, dlqDir string) error {
 		if err != nil {
 			return err
 		}
-
 		if err := table.row(name, lagText(cp, now), snapshotText(cp), cp.GTIDSet); err != nil {
 			return err
 		}
 		if cp.LastError != "" {
-			// Under the row rather than in a column: it is the one field worth reading in
-			// full, and a stopped stream is why anyone runs this.
 			fmt.Printf("%-28s stopped: %s\n", "", cp.LastError)
 		}
 	}
 	return nil
 }
 
-// statusTable prints the report, with a refused column only when a dead letter directory was
-// given: a zero from a directory nobody passed would read as a reassurance nothing checked.
 type statusTable struct {
 	dlqDir string
 }
@@ -115,7 +99,6 @@ func (t statusTable) row(name, lag, snapshot, position string) error {
 		fmt.Printf(t.format(), name, lag, snapshot, position)
 		return nil
 	}
-
 	refused, err := dlq.Count(t.dlqDir, name)
 	if err != nil {
 		return err

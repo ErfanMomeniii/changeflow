@@ -16,13 +16,11 @@ import (
 
 func newTestWriter(t *testing.T, tune func(*Options)) (*Writer, string) {
 	t.Helper()
-
 	dir := t.TempDir()
 	opts := Options{Dir: dir, Stream: "orders_to_es"}
 	if tune != nil {
 		tune(&opts)
 	}
-
 	w, err := New(opts)
 	if err != nil {
 		t.Fatalf("new writer: %v", err)
@@ -39,16 +37,13 @@ func rejection(key, reason string) sink.Rejection {
 	}
 }
 
-// lines reads the records a writer has produced.
 func lines(t *testing.T, path string) []string {
 	t.Helper()
-
 	f, err := os.Open(path)
 	if err != nil {
 		t.Fatalf("open %s: %v", path, err)
 	}
 	defer f.Close()
-
 	var out []string
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
@@ -64,7 +59,6 @@ func lines(t *testing.T, path string) []string {
 
 func TestRecordWritesOneLinePerRejection(t *testing.T) {
 	w, dir := newTestWriter(t, nil)
-
 	err := w.Record(t.Context(), []sink.Rejection{
 		rejection("42", "mapper_parsing_exception"),
 		rejection("43", "mapper_parsing_exception"),
@@ -72,7 +66,6 @@ func TestRecordWritesOneLinePerRejection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("record: %v", err)
 	}
-
 	got := lines(t, filepath.Join(dir, "orders_to_es.jsonl"))
 	if len(got) != 2 {
 		t.Fatalf("expected 2 records, got %d", len(got))
@@ -88,16 +81,13 @@ func TestRecordWritesOneLinePerRejection(t *testing.T) {
 // original event.
 func TestRecordCarriesEnoughToDiagnoseAndReplay(t *testing.T) {
 	w, dir := newTestWriter(t, nil)
-
 	if err := w.Record(t.Context(), []sink.Rejection{rejection("42", "failed to parse field [total]")}); err != nil {
 		t.Fatalf("record: %v", err)
 	}
-
 	var rec Record
 	if err := json.Unmarshal([]byte(lines(t, filepath.Join(dir, "orders_to_es.jsonl"))[0]), &rec); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-
 	if rec.Stream != "orders_to_es" {
 		t.Errorf("stream = %q", rec.Stream)
 	}
@@ -123,16 +113,13 @@ func TestRecordCarriesEnoughToDiagnoseAndReplay(t *testing.T) {
 // database is.
 func TestPayloadIsWithheldByDefault(t *testing.T) {
 	w, dir := newTestWriter(t, nil)
-
 	if err := w.Record(t.Context(), []sink.Rejection{rejection("42", "bad")}); err != nil {
 		t.Fatalf("record: %v", err)
 	}
-
 	line := lines(t, filepath.Join(dir, "orders_to_es.jsonl"))[0]
 	if strings.Contains(line, "card-4111") {
 		t.Fatalf("document body leaked into the dead letter file: %s", line)
 	}
-
 	var rec Record
 	if err := json.Unmarshal([]byte(line), &rec); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -140,7 +127,6 @@ func TestPayloadIsWithheldByDefault(t *testing.T) {
 	if len(rec.Body) != 0 {
 		t.Errorf("body = %s, want it omitted", rec.Body)
 	}
-	// The size is still useful when diagnosing a rejection caused by document size.
 	if rec.BodyBytes == 0 {
 		t.Error("expected the body size to be recorded even when its content is not")
 	}
@@ -148,11 +134,9 @@ func TestPayloadIsWithheldByDefault(t *testing.T) {
 
 func TestPayloadIsIncludedWhenRequested(t *testing.T) {
 	w, dir := newTestWriter(t, func(o *Options) { o.IncludePayload = true })
-
 	if err := w.Record(t.Context(), []sink.Rejection{rejection("42", "bad")}); err != nil {
 		t.Fatalf("record: %v", err)
 	}
-
 	line := lines(t, filepath.Join(dir, "orders_to_es.jsonl"))[0]
 	if !strings.Contains(line, "card-4111") {
 		t.Fatalf("expected the body to be recorded: %s", line)
@@ -161,13 +145,11 @@ func TestPayloadIsIncludedWhenRequested(t *testing.T) {
 
 func TestRecordAppendsAcrossCalls(t *testing.T) {
 	w, dir := newTestWriter(t, nil)
-
 	for _, key := range []string{"1", "2", "3"} {
 		if err := w.Record(t.Context(), []sink.Rejection{rejection(key, "bad")}); err != nil {
 			t.Fatalf("record: %v", err)
 		}
 	}
-
 	if got := lines(t, filepath.Join(dir, "orders_to_es.jsonl")); len(got) != 3 {
 		t.Fatalf("expected 3 records, got %d", len(got))
 	}
@@ -178,11 +160,9 @@ func TestRecordAppendsAcrossCalls(t *testing.T) {
 // without closing the writer shows the data has left our buffers.
 func TestRecordIsDurableBeforeReturning(t *testing.T) {
 	w, dir := newTestWriter(t, nil)
-
 	if err := w.Record(t.Context(), []sink.Rejection{rejection("42", "bad")}); err != nil {
 		t.Fatalf("record: %v", err)
 	}
-
 	if got := lines(t, filepath.Join(dir, "orders_to_es.jsonl")); len(got) != 1 {
 		t.Fatalf("record was still buffered after Record returned, found %d lines", len(got))
 	}
@@ -190,11 +170,9 @@ func TestRecordIsDurableBeforeReturning(t *testing.T) {
 
 func TestRecordOfNothingDoesNothing(t *testing.T) {
 	w, dir := newTestWriter(t, nil)
-
 	if err := w.Record(t.Context(), nil); err != nil {
 		t.Fatalf("record: %v", err)
 	}
-
 	if _, err := os.Stat(filepath.Join(dir, "orders_to_es.jsonl")); !os.IsNotExist(err) {
 		t.Error("an empty record should not create a file")
 	}
@@ -202,13 +180,11 @@ func TestRecordOfNothingDoesNothing(t *testing.T) {
 
 func TestWriterCreatesMissingDirectory(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "nested", "dlq")
-
 	w, err := New(Options{Dir: dir, Stream: "s"})
 	if err != nil {
 		t.Fatalf("new writer: %v", err)
 	}
 	defer w.Close()
-
 	if err := w.Record(t.Context(), []sink.Rejection{rejection("1", "bad")}); err != nil {
 		t.Fatalf("record: %v", err)
 	}
@@ -221,13 +197,11 @@ func TestWriterCreatesMissingDirectory(t *testing.T) {
 // fill its volume.
 func TestFileRotatesWhenItGrowsPastTheLimit(t *testing.T) {
 	w, dir := newTestWriter(t, func(o *Options) { o.MaxBytes = 400 })
-
 	for i := 0; i < 20; i++ {
 		if err := w.Record(t.Context(), []sink.Rejection{rejection("key", strings.Repeat("x", 60))}); err != nil {
 			t.Fatalf("record %d: %v", i, err)
 		}
 	}
-
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("read dir: %v", err)
@@ -239,8 +213,6 @@ func TestFileRotatesWhenItGrowsPastTheLimit(t *testing.T) {
 		}
 		t.Fatalf("expected rotation to produce more than one file, got %v", names)
 	}
-
-	// Rotated records must still be there: they are the whole point of the file.
 	var total int
 	for _, e := range entries {
 		total += len(lines(t, filepath.Join(dir, e.Name())))
@@ -252,7 +224,6 @@ func TestFileRotatesWhenItGrowsPastTheLimit(t *testing.T) {
 
 func TestConcurrentRecordsProduceIntactLines(t *testing.T) {
 	w, dir := newTestWriter(t, nil)
-
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
@@ -267,7 +238,6 @@ func TestConcurrentRecordsProduceIntactLines(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-
 	got := lines(t, filepath.Join(dir, "orders_to_es.jsonl"))
 	if len(got) != 160 {
 		t.Fatalf("expected 160 records, got %d", len(got))
@@ -283,11 +253,9 @@ func TestConcurrentRecordsProduceIntactLines(t *testing.T) {
 // afterthought.
 func TestReadReturnsRecordedFailures(t *testing.T) {
 	w, dir := newTestWriter(t, nil)
-
 	if err := w.Record(t.Context(), []sink.Rejection{rejection("42", "one"), rejection("43", "two")}); err != nil {
 		t.Fatalf("record: %v", err)
 	}
-
 	records, err := Read(filepath.Join(dir, "orders_to_es.jsonl"))
 	if err != nil {
 		t.Fatalf("read: %v", err)
@@ -306,7 +274,6 @@ func TestReadReportsCorruptLines(t *testing.T) {
 	if err := os.WriteFile(path, []byte("{\"key\":\"1\"}\nnot json\n"), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-
 	if _, err := Read(path); err == nil {
 		t.Fatal("expected a corrupt line to be reported rather than skipped silently")
 	}
@@ -319,7 +286,6 @@ func TestNewRejectsIncompleteOptions(t *testing.T) {
 	}{
 		{"no directory", Options{Stream: "s"}},
 		{"no stream", Options{Dir: t.TempDir()}},
-		// A stream name reaches the filesystem, so path traversal must not.
 		{"stream escaping the directory", Options{Dir: t.TempDir(), Stream: "../../etc/passwd"}},
 		{"stream with a separator", Options{Dir: t.TempDir(), Stream: "a/b"}},
 	} {
@@ -336,21 +302,16 @@ func TestNewRejectsIncompleteOptions(t *testing.T) {
 func TestCountIncludesRotatedFiles(t *testing.T) {
 	stamp := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
 	w, dir := newTestWriter(t, func(o *Options) {
-		// Small enough that each call rotates, which is what produces several files.
 		o.MaxBytes = 1
 		o.Now = func() time.Time { return stamp }
 	})
-
 	if err := w.Record(t.Context(), []sink.Rejection{rejection("1", "refused"), rejection("2", "refused")}); err != nil {
 		t.Fatalf("record: %v", err)
 	}
-	// A second batch, after the first file was rotated away, with a different stamp so
-	// the names differ.
 	stamp = stamp.Add(time.Second)
 	if err := w.Record(t.Context(), []sink.Rejection{rejection("3", "refused")}); err != nil {
 		t.Fatalf("record: %v", err)
 	}
-
 	files, err := Files(dir, "orders_to_es")
 	if err != nil {
 		t.Fatalf("files: %v", err)
@@ -358,7 +319,6 @@ func TestCountIncludesRotatedFiles(t *testing.T) {
 	if len(files) < 2 {
 		t.Fatalf("found %d file(s), expected the rotated ones too: %v", len(files), files)
 	}
-
 	count, err := Count(dir, "orders_to_es")
 	if err != nil {
 		t.Fatalf("count: %v", err)
@@ -384,7 +344,6 @@ func TestCountIsPerStream(t *testing.T) {
 		}
 		w.Close()
 	}
-
 	if got, err := Count(dir, "orders_to_es"); err != nil || got != 2 {
 		t.Errorf("count for one stream = %d, %v; want 2", got, err)
 	}
@@ -419,7 +378,6 @@ func TestCountDoesNotCountAnotherStreamWithASharedPrefix(t *testing.T) {
 		}
 		w.Close()
 	}
-
 	if got, err := Count(dir, "orders"); err != nil || got != 1 {
 		t.Errorf("count = %d, %v; want only this stream's single record", got, err)
 	}

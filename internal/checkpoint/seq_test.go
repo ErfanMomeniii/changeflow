@@ -7,15 +7,13 @@ import (
 	"time"
 )
 
-// fixedClock returns a clock stuck at a chosen instant, so tests control the
-// wall-clock floor exactly.
 func fixedClock(ms int64) func() time.Time {
 	return func() time.Time { return time.UnixMilli(ms) }
 }
 
 const (
-	testClockMs = 1_786_000_000_000         // an instant in 2026
-	testFloor   = testClockMs << floorShift // the seq floor derived from it
+	testClockMs = 1_786_000_000_000
+	testFloor   = testClockMs << floorShift
 )
 
 func newTestAllocator(t *testing.T, store Store, blockSize uint64, clockMs int64) *Allocator {
@@ -29,7 +27,6 @@ func newTestAllocator(t *testing.T, store Store, blockSize uint64, clockMs int64
 
 func TestAllocatorIssuesIncreasingValues(t *testing.T) {
 	a := newTestAllocator(t, NewMemoryStore(), 100, testClockMs)
-
 	var prev uint64
 	for i := 0; i < 250; i++ {
 		got, err := a.Next(context.Background())
@@ -48,7 +45,6 @@ func TestAllocatorIssuesIncreasingValues(t *testing.T) {
 // and the sink silently freezes on old data while appearing healthy.
 func TestAllocatorFloorsOnWallClock(t *testing.T) {
 	a := newTestAllocator(t, NewMemoryStore(), 100, testClockMs)
-
 	got, err := a.Next(context.Background())
 	if err != nil {
 		t.Fatalf("next: %v", err)
@@ -62,10 +58,7 @@ func TestAllocatorPrefersPersistedWatermarkOverLowerClock(t *testing.T) {
 	store := NewMemoryStore()
 	high := uint64(testFloor) + 5_000_000
 	mustSave(t, store, Checkpoint{Stream: "orders_to_es", SeqWatermark: high})
-
-	// A clock reading far in the past, as after a bad NTP correction.
 	a := newTestAllocator(t, store, 100, 1_000)
-
 	got, err := a.Next(context.Background())
 	if err != nil {
 		t.Fatalf("next: %v", err)
@@ -80,10 +73,9 @@ func TestAllocatorPrefersPersistedWatermarkOverLowerClock(t *testing.T) {
 func TestAllocatorNeverReissuesAcrossRestart(t *testing.T) {
 	store := NewMemoryStore()
 	const blockSize = 50
-
 	first := newTestAllocator(t, store, blockSize, testClockMs)
 	var issued []uint64
-	for i := 0; i < 10; i++ { // consume only part of the block
+	for i := 0; i < 10; i++ {
 		v, err := first.Next(context.Background())
 		if err != nil {
 			t.Fatalf("next: %v", err)
@@ -91,15 +83,11 @@ func TestAllocatorNeverReissuesAcrossRestart(t *testing.T) {
 		issued = append(issued, v)
 	}
 	highest := issued[len(issued)-1]
-
-	// Simulate a crash: the allocator disappears without warning, and a new one
-	// starts from whatever was persisted.
 	second := newTestAllocator(t, store, blockSize, testClockMs)
 	next, err := second.Next(context.Background())
 	if err != nil {
 		t.Fatalf("next after restart: %v", err)
 	}
-
 	if next <= highest {
 		t.Fatalf("restart reissued %d, which is not above the highest previously issued %d", next, highest)
 	}
@@ -115,14 +103,11 @@ func TestAllocatorPersistsOncePerBlock(t *testing.T) {
 	store := NewMemoryStore()
 	const blockSize = 100
 	a := newTestAllocator(t, store, blockSize, testClockMs)
-
 	for i := 0; i < blockSize*3; i++ {
 		if _, err := a.Next(context.Background()); err != nil {
 			t.Fatalf("next: %v", err)
 		}
 	}
-
-	// One reservation for the first block, plus one per exhaustion.
 	if got := store.Saves(); got != 3 {
 		t.Fatalf("expected 3 reservations for %d values at block size %d, got %d", blockSize*3, blockSize, got)
 	}
@@ -132,14 +117,10 @@ func TestAllocatorReservesAheadOfWhatItIssues(t *testing.T) {
 	store := NewMemoryStore()
 	const blockSize = 100
 	a := newTestAllocator(t, store, blockSize, testClockMs)
-
 	first, err := a.Next(context.Background())
 	if err != nil {
 		t.Fatalf("next: %v", err)
 	}
-
-	// The persisted watermark must already cover the whole block, otherwise a
-	// crash mid-block would hand out values that were already used.
 	cp, err := store.Load(context.Background(), "orders_to_es")
 	if err != nil {
 		t.Fatalf("load: %v", err)
@@ -151,14 +132,12 @@ func TestAllocatorReservesAheadOfWhatItIssues(t *testing.T) {
 
 func TestAllocatorIsSafeForConcurrentUse(t *testing.T) {
 	a := newTestAllocator(t, NewMemoryStore(), 64, testClockMs)
-
 	const goroutines, perGoroutine = 8, 200
 	var (
 		mu   sync.Mutex
 		seen = make(map[uint64]bool, goroutines*perGoroutine)
 		wg   sync.WaitGroup
 	)
-
 	wg.Add(goroutines)
 	for g := 0; g < goroutines; g++ {
 		go func() {
@@ -179,7 +158,6 @@ func TestAllocatorIsSafeForConcurrentUse(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-
 	if len(seen) != goroutines*perGoroutine {
 		t.Fatalf("expected %d distinct values, got %d", goroutines*perGoroutine, len(seen))
 	}
@@ -188,11 +166,8 @@ func TestAllocatorIsSafeForConcurrentUse(t *testing.T) {
 // Elasticsearch external versions are a signed 64-bit field, so the floor must
 // leave room for decades of headroom rather than overflowing into negative.
 func TestSeqFloorStaysWellInsideSignedRange(t *testing.T) {
-	// Roughly the year 2100.
 	far := time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
-
 	floor := seqFloor(time.UnixMilli(far))
-
 	if floor > uint64(1)<<62 {
 		t.Fatalf("floor %d is too close to the signed 64-bit limit", floor)
 	}
@@ -205,9 +180,7 @@ func TestSeqFloorStaysWellInsideSignedRange(t *testing.T) {
 // cannot outrun the clock and collide with the next millisecond's floor.
 func TestSeqFloorLeavesRoomWithinAMillisecond(t *testing.T) {
 	now := time.UnixMilli(testClockMs)
-
 	gap := seqFloor(now.Add(time.Millisecond)) - seqFloor(now)
-
 	if gap != 1<<floorShift {
 		t.Fatalf("expected %d values per millisecond, got %d", 1<<floorShift, gap)
 	}

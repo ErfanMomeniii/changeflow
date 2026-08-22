@@ -18,8 +18,6 @@ import (
 	"github.com/ErfanMomeniii/changeflow/internal/schema"
 )
 
-// counterSeq hands out increasing versions without a store, since these tests are
-// about decoding rather than persistence.
 type counterSeq struct{ n uint64 }
 
 func (c *counterSeq) Next(context.Context) (uint64, error) {
@@ -27,17 +25,8 @@ func (c *counterSeq) Next(context.Context) (uint64, error) {
 	return c.n, nil
 }
 
-// nextServerID keeps each harness on its own replica id. Reusing one would make
-// the master evict the previous connection, and the test would then hang waiting
-// for events on a stream that was killed.
 var nextServerID atomic.Uint32
 
-// idRange bounds the rows a test owns.
-//
-// Packages run in parallel, so another package's fixtures can be writing to the same
-// table while these tests assert on the order of events. Filtering by the identifiers
-// a test wrote makes each test independent of that, which is more useful than
-// serialising the suite to hide it.
 type idRange struct{ from, to uint64 }
 
 type liveHarness struct {
@@ -49,23 +38,17 @@ type liveHarness struct {
 	cancel context.CancelFunc
 }
 
-// newLiveHarness connects to the MySQL named by CHANGEFLOW_TEST_DSN, starts
-// replication from the current position, and returns the event stream.
 func newLiveHarness(t *testing.T, tables ...string) *liveHarness {
 	t.Helper()
 	return newLiveHarnessForIDs(t, idRange{}, tables...)
 }
 
-// newLiveHarnessForIDs returns a harness that only reports events for rows in the
-// given range.
 func newLiveHarnessForIDs(t *testing.T, ids idRange, tables ...string) *liveHarness {
 	t.Helper()
-
 	dsn := os.Getenv("CHANGEFLOW_TEST_DSN")
 	if dsn == "" {
 		t.Skip("set CHANGEFLOW_TEST_DSN to run binlog tests against MySQL")
 	}
-
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -74,7 +57,6 @@ func newLiveHarnessForIDs(t *testing.T, ids idRange, tables ...string) *liveHarn
 	if err := db.PingContext(t.Context()); err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-
 	writeDSN := os.Getenv("CHANGEFLOW_TEST_WRITE_DSN")
 	if writeDSN == "" {
 		t.Skip("set CHANGEFLOW_TEST_WRITE_DSN to a user allowed to modify the source table")
@@ -87,7 +69,6 @@ func newLiveHarnessForIDs(t *testing.T, ids idRange, tables ...string) *liveHarn
 	if err := writer.PingContext(t.Context()); err != nil {
 		t.Fatalf("connect writer: %v", err)
 	}
-
 	var gtid string
 	if err := db.QueryRowContext(t.Context(), "SELECT @@GLOBAL.gtid_executed").Scan(&gtid); err != nil {
 		t.Fatalf("read position: %v", err)
@@ -96,12 +77,10 @@ func newLiveHarnessForIDs(t *testing.T, ids idRange, tables ...string) *liveHarn
 	if gtid == "" {
 		t.Skip("server has logged no transactions, so there is no position to stream from")
 	}
-
 	host, port := "127.0.0.1", uint16(13306)
 	if h := os.Getenv("CHANGEFLOW_TEST_HOST"); h != "" {
 		host = h
 	}
-
 	s, err := New(Options{
 		Host:      host,
 		Port:      port,
@@ -116,23 +95,16 @@ func newLiveHarnessForIDs(t *testing.T, ids idRange, tables ...string) *liveHarn
 	if err != nil {
 		t.Fatalf("new streamer: %v", err)
 	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	events := s.Events(ctx)
 	t.Cleanup(func() { s.Close() })
-
-	// Give replication a moment to register before the test writes.
 	time.Sleep(1500 * time.Millisecond)
-
 	return &liveHarness{ids: ids, db: db, writer: writer, stream: s, events: events, cancel: cancel}
 }
 
-// next waits for the next event belonging to this test, skipping any other package's
-// writes to the same table.
 func (h *liveHarness) next(t *testing.T) cdc.ChangeEvent {
 	t.Helper()
-
 	deadline := time.After(15 * time.Second)
 	for {
 		select {
@@ -150,7 +122,6 @@ func (h *liveHarness) next(t *testing.T) cdc.ChangeEvent {
 	}
 }
 
-// owns reports whether an event belongs to the rows this test wrote.
 func (h *liveHarness) owns(ev cdc.ChangeEvent) bool {
 	if h.ids == (idRange{}) {
 		return true
@@ -175,12 +146,10 @@ func (h *liveHarness) exec(t *testing.T, query string, args ...any) {
 
 func TestStreamerEmitsInsertUpdateDelete(t *testing.T) {
 	h := newLiveHarnessForIDs(t, idRange{9001, 9001}, "shop.orders")
-
 	h.exec(t, "INSERT INTO orders (id,user_id,status,total_amount) VALUES (9001,5,'paid',12.34)")
 	h.exec(t, "UPDATE orders SET status='shipped' WHERE id=9001")
 	h.exec(t, "DELETE FROM orders WHERE id=9001")
 	t.Cleanup(func() { h.writer.Exec("DELETE FROM orders WHERE id=9001") })
-
 	insert := h.next(t)
 	if insert.Operation != cdc.OperationInsert {
 		t.Fatalf("first event operation = %s, want insert", insert.Operation)
@@ -197,17 +166,13 @@ func TestStreamerEmitsInsertUpdateDelete(t *testing.T) {
 	if insert.Timestamp.IsZero() {
 		t.Error("event carries no timestamp, so lag could not be measured")
 	}
-
 	update := h.next(t)
 	if update.Operation != cdc.OperationUpdate {
 		t.Fatalf("second event operation = %s, want update", update.Operation)
 	}
-	// An update needs both images: the prior one to find the old key, the new one to
-	// write.
 	if update.Before == nil || update.After == nil {
 		t.Fatal("an update must carry both before and after values")
 	}
-
 	del := h.next(t)
 	if del.Operation != cdc.OperationDelete {
 		t.Fatalf("third event operation = %s, want delete", del.Operation)
@@ -224,12 +189,10 @@ func TestStreamerEmitsInsertUpdateDelete(t *testing.T) {
 // key wins.
 func TestStreamerVersionsIncrease(t *testing.T) {
 	h := newLiveHarnessForIDs(t, idRange{9100, 9199}, "shop.orders")
-
 	for i := 0; i < 3; i++ {
 		h.exec(t, "INSERT INTO orders (id,user_id,status,total_amount) VALUES (?,5,'paid',1.00)", 9100+i)
 	}
 	t.Cleanup(func() { h.writer.Exec("DELETE FROM orders WHERE id BETWEEN 9100 AND 9200") })
-
 	var prev uint64
 	for i := 0; i < 3; i++ {
 		ev := h.next(t)
@@ -244,14 +207,11 @@ func TestStreamerVersionsIncrease(t *testing.T) {
 // between decoding and encoding.
 func TestStreamerDecodesValuesForTheTransform(t *testing.T) {
 	h := newLiveHarnessForIDs(t, idRange{9300, 9300}, "shop.orders")
-
 	h.exec(t, `INSERT INTO orders (id,user_id,status,channels,total_amount,is_gift,placed_at)
 	           VALUES (9300, 18446744073709551000, 'shipped', 'web,pos', 19.90, 1, '2026-08-11 10:00:00.000')`)
 	t.Cleanup(func() { h.writer.Exec("DELETE FROM orders WHERE id=9300") })
-
 	ev := h.next(t)
 	row := ev.After
-
 	col := func(name string) any {
 		c, ok := ev.Meta.Column(name)
 		if !ok {
@@ -259,27 +219,20 @@ func TestStreamerDecodesValuesForTheTransform(t *testing.T) {
 		}
 		return row[c.Position]
 	}
-
-	// An unsigned column must arrive unsigned, or values above 2^63 read negative.
 	if v, ok := col("user_id").(uint64); !ok || v != 18446744073709551000 {
 		t.Errorf("user_id = %#v, want uint64(18446744073709551000)", col("user_id"))
 	}
-	// An exact decimal, not a float.
 	if v, ok := col("total_amount").(decimal.Decimal); !ok {
 		t.Errorf("total_amount = %#v, want a decimal", col("total_amount"))
 	} else if v.String() != "19.9" && v.StringFixed(2) != "19.90" {
 		t.Errorf("total_amount = %s, want 19.90", v.StringFixed(2))
 	}
-	// ENUM and SET arrive as numbers; resolving them to labels needs the definition,
-	// which is why the event carries it.
 	if _, ok := asInt(col("status")); !ok {
 		t.Errorf("status = %#v, want an enum member number", col("status"))
 	}
 	if _, ok := asInt(col("channels")); !ok {
 		t.Errorf("channels = %#v, want a set bitmask", col("channels"))
 	}
-	// A DATETIME arrives as text, so the transform can interpret it in the source's
-	// zone rather than the reader's.
 	if _, ok := col("placed_at").(string); !ok {
 		t.Errorf("placed_at = %#v, want the server's text form", col("placed_at"))
 	}
@@ -302,14 +255,12 @@ func asInt(v any) (int64, bool) {
 // cannot consume versions or reach a sink.
 func TestStreamerIgnoresUnwatchedTables(t *testing.T) {
 	h := newLiveHarness(t, "shop.order_items")
-
 	h.exec(t, "INSERT INTO orders (id,user_id,status,total_amount) VALUES (9400,5,'paid',1.00)")
 	h.exec(t, "INSERT INTO order_items (order_id,sku,qty,unit_price) VALUES (9400,'SKU-X',1,1.00)")
 	t.Cleanup(func() {
 		h.writer.Exec("DELETE FROM order_items WHERE order_id=9400")
 		h.writer.Exec("DELETE FROM orders WHERE id=9400")
 	})
-
 	ev := h.next(t)
 	if ev.Meta.Name() != "shop.order_items" {
 		t.Fatalf("received an event for %s, which is not watched", ev.Meta.Name())
@@ -320,22 +271,16 @@ func TestStreamerIgnoresUnwatchedTables(t *testing.T) {
 // values to the wrong fields.
 func TestStreamerReloadsDefinitionAfterAlter(t *testing.T) {
 	h := newLiveHarnessForIDs(t, idRange{9500, 9599}, "shop.orders")
-
-	// Registered before anything can fail, so a mid-test failure still tidies up.
 	t.Cleanup(func() {
 		h.writer.Exec("ALTER TABLE orders DROP COLUMN temp_note")
 		h.writer.Exec("DELETE FROM orders WHERE id IN (9500,9501)")
 	})
-
 	h.exec(t, "INSERT INTO orders (id,user_id,status,total_amount) VALUES (9500,5,'paid',1.00)")
 	first := h.next(t)
 	widthBefore := len(first.Meta.Columns)
-
 	h.exec(t, "ALTER TABLE orders ADD COLUMN temp_note VARCHAR(16) NULL")
-
 	h.exec(t, "INSERT INTO orders (id,user_id,status,total_amount,temp_note) VALUES (9501,5,'paid',1.00,'hi')")
 	second := h.next(t)
-
 	if len(second.Meta.Columns) != widthBefore+1 {
 		t.Fatalf("definition still has %d columns after adding one to %d", len(second.Meta.Columns), widthBefore)
 	}
@@ -355,22 +300,14 @@ func TestStreamerReloadsDefinitionAfterAlter(t *testing.T) {
 // deletes have since been purged, and re-does the entire binlog on every restart.
 func TestEventsCarryTheCumulativeExecutedSet(t *testing.T) {
 	h := newLiveHarnessForIDs(t, idRange{9600, 9699}, "shop.orders")
-
 	t.Cleanup(func() { h.writer.Exec("DELETE FROM orders WHERE id BETWEEN 9600 AND 9700") })
 	h.exec(t, "INSERT INTO orders (id,user_id,status,total_amount) VALUES (9600,5,'paid',1.00)")
 	h.exec(t, "INSERT INTO orders (id,user_id,status,total_amount) VALUES (9601,5,'paid',1.00)")
-
 	first := h.next(t)
 	second := h.next(t)
-
-	// A set spans a range of transactions and reads as "uuid:1-N", while a single
-	// identifier reads as "uuid:N".
 	if !strings.Contains(first.GTID, "-") {
 		t.Errorf("position %q looks like one transaction rather than a cumulative set", first.GTID)
 	}
-
-	// The second event's position must include the first event's transaction, since
-	// that transaction has committed by then.
 	firstSet, err := mysql.ParseMysqlGTIDSet(first.GTID)
 	if err != nil {
 		t.Fatalf("parse %q: %v", first.GTID, err)
@@ -396,16 +333,13 @@ func TestEventsCarryTheCumulativeExecutedSet(t *testing.T) {
 // entire retained binlog.
 func TestResumingFromAPositionDoesNotReplayEarlierTransactions(t *testing.T) {
 	h := newLiveHarnessForIDs(t, idRange{9700, 9799}, "shop.orders")
-
 	t.Cleanup(func() { h.writer.Exec("DELETE FROM orders WHERE id BETWEEN 9700 AND 9800") })
 	h.exec(t, "INSERT INTO orders (id,user_id,status,total_amount) VALUES (9700,5,'paid',1.00)")
 	h.exec(t, "INSERT INTO orders (id,user_id,status,total_amount) VALUES (9701,5,'paid',1.00)")
-
-	h.next(t) // 9700
+	h.next(t)
 	second := h.next(t)
 	resumeFrom := second.GTID
 	h.stream.Close()
-
 	resumed, err := New(Options{
 		Host: "127.0.0.1", Port: 13306, User: "cdc", Password: "cdc",
 		ServerID:  4100 + nextServerID.Add(1),
@@ -418,12 +352,9 @@ func TestResumingFromAPositionDoesNotReplayEarlierTransactions(t *testing.T) {
 		t.Fatalf("new streamer: %v", err)
 	}
 	defer resumed.Close()
-
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	events := resumed.Events(ctx)
-
-	// Collect whatever arrives before the deadline.
 	var replayed []uint64
 	deadline := time.After(3 * time.Second)
 collect:
@@ -440,15 +371,12 @@ collect:
 			break collect
 		}
 	}
-
 	for _, id := range replayed {
 		if id == 9700 {
 			t.Fatalf("resuming from %q replayed row 9700, whose transaction the position already covers (replayed: %v)",
 				resumeFrom, replayed)
 		}
 	}
-	// The seed rows are the canary: they were written long before this position, so
-	// seeing them means the whole binlog is being re-read.
 	for _, id := range replayed {
 		if id == 1 || id == 2 {
 			t.Fatalf("resuming replayed seed row %d, so the position is not being honoured (replayed: %v)", id, replayed)
@@ -461,28 +389,20 @@ collect:
 // stuck at that position.
 func TestRowsWrittenBeforeAColumnWasDroppedStillDecode(t *testing.T) {
 	h := newLiveHarnessForIDs(t, idRange{9900, 9999}, "shop.orders")
-
 	t.Cleanup(func() {
 		h.writer.Exec("ALTER TABLE orders DROP COLUMN scratch")
 		h.writer.Exec("DELETE FROM orders WHERE id BETWEEN 9900 AND 9999")
 	})
-
-	// A row written while the extra column exists, then the column removed. The event
-	// is now wider than the table.
 	h.exec(t, "ALTER TABLE orders ADD COLUMN scratch VARCHAR(16) NULL")
 	h.exec(t, "INSERT INTO orders (id,user_id,status,total_amount,scratch) VALUES (9900,5,'paid',1.00,'x')")
 	h.exec(t, "ALTER TABLE orders DROP COLUMN scratch")
-
 	ev := h.next(t)
-
 	if ev.Operation != cdc.OperationInsert {
 		t.Fatalf("operation = %s, want insert", ev.Operation)
 	}
-	// The row is laid out by the current definition, so the transform can index it.
 	if len(ev.After) != len(ev.Meta.Columns) {
 		t.Fatalf("row has %d values against %d columns", len(ev.After), len(ev.Meta.Columns))
 	}
-	// Values must land on the right columns, not be shifted by the removed one.
 	for _, tc := range []struct {
 		column string
 		want   any
@@ -504,17 +424,13 @@ func TestRowsWrittenBeforeAColumnWasDroppedStillDecode(t *testing.T) {
 // rather than shifting every later value along by one.
 func TestRowsWrittenBeforeAColumnWasAddedStillDecode(t *testing.T) {
 	h := newLiveHarnessForIDs(t, idRange{9800, 9899}, "shop.orders")
-
 	t.Cleanup(func() {
 		h.writer.Exec("ALTER TABLE orders DROP COLUMN added_later")
 		h.writer.Exec("DELETE FROM orders WHERE id BETWEEN 9800 AND 9899")
 	})
-
 	h.exec(t, "INSERT INTO orders (id,user_id,status,total_amount) VALUES (9800,5,'paid',1.00)")
 	h.exec(t, "ALTER TABLE orders ADD COLUMN added_later VARCHAR(16) NULL")
-	// A second write, so the reader has a reason to reload the definition.
 	h.exec(t, "INSERT INTO orders (id,user_id,status,total_amount) VALUES (9801,5,'paid',1.00)")
-
 	first := h.next(t)
 	if len(first.After) != len(first.Meta.Columns) {
 		t.Fatalf("row has %d values against %d columns", len(first.After), len(first.Meta.Columns))
@@ -526,7 +442,6 @@ func TestRowsWrittenBeforeAColumnWasAddedStillDecode(t *testing.T) {
 	if got := first.After[c.Position]; got != uint64(9800) {
 		t.Errorf("id = %#v, want 9800; values may have shifted", got)
 	}
-
 	second := h.next(t)
 	if got := second.After[c.Position]; got != uint64(9801) {
 		t.Errorf("id = %#v, want 9801", got)
@@ -539,7 +454,6 @@ func TestNewRejectsIncompleteOptions(t *testing.T) {
 		Host: "127.0.0.1", ServerID: 1, StartGTID: "uuid:1-2",
 		Schemas: store, Sequencer: &counterSeq{},
 	}
-
 	for _, tc := range []struct {
 		name  string
 		spoil func(*Options)
@@ -569,7 +483,6 @@ func TestAPurgedPositionSaysWhatToDoAboutIt(t *testing.T) {
 		Code:    errBinlogReadFailure,
 		Message: "The replica is connecting using CHANGE REPLICATION SOURCE TO MASTER_AUTO_POSITION = 1, but the source has purged binary logs containing GTIDs that the replica requires",
 	})
-
 	if !errors.Is(err, ErrPositionPurged) {
 		t.Fatalf("error = %v, want it to be recognisable as a purged position", err)
 	}
@@ -585,9 +498,7 @@ func TestAPurgedPositionSaysWhatToDoAboutIt(t *testing.T) {
 // dressing it up as a lost position would send someone to rescan a table for nothing.
 func TestOtherServerErrorsArePassedThrough(t *testing.T) {
 	original := &mysql.MyError{Code: 1045, Message: "Access denied for user 'cdc'@'%'"}
-
 	err := explain(original)
-
 	if errors.Is(err, ErrPositionPurged) {
 		t.Error("an access denial was reported as a purged position")
 	}

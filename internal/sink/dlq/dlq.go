@@ -1,8 +1,3 @@
-// Package dlq records documents a destination refused permanently.
-//
-// The pipeline advances its position once a rejection is recorded, so recording has
-// to be durable before Record returns. If a record were lost, the document would be
-// lost with it and nothing would indicate anything was missing.
 package dlq
 
 import (
@@ -36,30 +31,22 @@ type Record struct {
 
 // Options configures a writer.
 type Options struct {
-	// Dir holds the files, one per stream.
-	Dir string
-	// Stream names the file, and is validated because it reaches the filesystem.
-	Stream string
-	// MaxBytes rotates the file once it grows past this size, so a persistent
-	// failure cannot fill the volume.
-	MaxBytes int64
-	// IncludePayload records document bodies. Off by default.
+	Dir            string
+	Stream         string
+	MaxBytes       int64
 	IncludePayload bool
-	// Now is injected for tests.
-	Now func() time.Time
+	Now            func() time.Time
 }
 
 // Writer appends records to a per-stream file.
 type Writer struct {
 	opts Options
 	path string
-
 	mu   sync.Mutex
 	file *os.File
 	size int64
 }
 
-// defaultMaxBytes rotates at a size that stays convenient to inspect by hand.
 const defaultMaxBytes = 64 << 20
 
 // New validates options and prepares a writer. The file is created on first use.
@@ -70,8 +57,6 @@ func New(opts Options) (*Writer, error) {
 	if opts.Stream == "" {
 		return nil, errors.New("dlq: a stream name is required")
 	}
-	// The stream name becomes a filename, so anything that could escape the
-	// directory is refused rather than sanitised.
 	if opts.Stream != filepath.Base(opts.Stream) ||
 		strings.ContainsAny(opts.Stream, `/\`) ||
 		opts.Stream == "." || opts.Stream == ".." {
@@ -83,7 +68,6 @@ func New(opts Options) (*Writer, error) {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
-
 	return &Writer{opts: opts, path: filepath.Join(opts.Dir, opts.Stream+".jsonl")}, nil
 }
 
@@ -95,14 +79,11 @@ func (w *Writer) Record(_ context.Context, rejections []sink.Rejection) error {
 	if len(rejections) == 0 {
 		return nil
 	}
-
 	w.mu.Lock()
 	defer w.mu.Unlock()
-
 	if err := w.open(); err != nil {
 		return err
 	}
-
 	buf := bufio.NewWriter(w.file)
 	written := int64(0)
 	for _, rej := range rejections {
@@ -119,14 +100,10 @@ func (w *Writer) Record(_ context.Context, rejections []sink.Rejection) error {
 	if err := buf.Flush(); err != nil {
 		return fmt.Errorf("dlq: flush %s: %w", w.path, err)
 	}
-
-	// The caller advances its position after this returns, so the data has to be on
-	// the device rather than in the operating system's cache.
 	if err := w.file.Sync(); err != nil {
 		return fmt.Errorf("dlq: sync %s: %w", w.path, err)
 	}
 	w.size += written
-
 	if w.size >= w.opts.MaxBytes {
 		if err := w.rotate(); err != nil {
 			return err
@@ -152,8 +129,6 @@ func (w *Writer) toRecord(rej sink.Rejection) Record {
 	return rec
 }
 
-// open creates the directory and file on first use, and recovers the current size
-// so an existing file is appended to rather than truncated.
 func (w *Writer) open() error {
 	if w.file != nil {
 		return nil
@@ -161,7 +136,6 @@ func (w *Writer) open() error {
 	if err := os.MkdirAll(w.opts.Dir, 0o750); err != nil {
 		return fmt.Errorf("dlq: create %s: %w", w.opts.Dir, err)
 	}
-
 	f, err := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("dlq: open %s: %w", w.path, err)
@@ -171,19 +145,15 @@ func (w *Writer) open() error {
 		f.Close()
 		return fmt.Errorf("dlq: stat %s: %w", w.path, err)
 	}
-
 	w.file, w.size = f, info.Size()
 	return nil
 }
 
-// rotate renames the current file and starts a new one. Records are never
-// discarded; keeping them is the reason the file exists.
 func (w *Writer) rotate() error {
 	if err := w.file.Close(); err != nil {
 		return fmt.Errorf("dlq: close %s: %w", w.path, err)
 	}
 	w.file = nil
-
 	stamp := w.opts.Now().UTC().Format("20060102T150405.000000000")
 	rotated := fmt.Sprintf("%s.%s", w.path, stamp)
 	if err := os.Rename(w.path, rotated); err != nil {
@@ -197,7 +167,6 @@ func (w *Writer) rotate() error {
 func (w *Writer) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-
 	if w.file == nil {
 		return nil
 	}
@@ -214,7 +183,6 @@ func Files(dir, stream string) ([]string, error) {
 	if dir == "" {
 		return nil, nil
 	}
-
 	pattern := filepath.Join(dir, "*.jsonl*")
 	if stream != "" {
 		pattern = filepath.Join(dir, stream+".jsonl*")
@@ -237,7 +205,6 @@ func Count(dir, stream string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-
 	total := 0
 	for _, path := range files {
 		n, err := countLines(path)
@@ -255,7 +222,6 @@ func countLines(path string) (int, error) {
 		return 0, fmt.Errorf("dlq: open %s: %w", path, err)
 	}
 	defer f.Close()
-
 	count := 0
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 16<<20)
@@ -281,15 +247,12 @@ func Read(path string) ([]Record, error) {
 		return nil, fmt.Errorf("dlq: open %s: %w", path, err)
 	}
 	defer f.Close()
-
 	var (
 		records []Record
 		scanner = bufio.NewScanner(f)
 		lineNo  int
 	)
-	// Records can be large when payloads are included.
 	scanner.Buffer(make([]byte, 0, 64*1024), 16<<20)
-
 	for scanner.Scan() {
 		lineNo++
 		line := strings.TrimSpace(scanner.Text())
