@@ -155,6 +155,9 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	s.setRunning(runtimes)
 	positions, err := s.backfill(ctx, sess, runtimes)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil
+		}
 		return err
 	}
 	return s.stream(ctx, sess, runtimes, positions)

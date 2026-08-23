@@ -205,6 +205,7 @@ func (s *Sink) post(ctx context.Context, body []byte, token string) (int, []byte
 		query.Set("insert_deduplication_token", token)
 	}
 	query.Set("async_insert", "0")
+	query.Set("date_time_input_format", "best_effort")
 	endpoint.RawQuery = query.Encode()
 	var (
 		reader  io.Reader = bytes.NewReader(body)

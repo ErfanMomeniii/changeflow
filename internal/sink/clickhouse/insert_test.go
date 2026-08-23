@@ -194,6 +194,9 @@ func TestBodyIsJSONEachRow(t *testing.T) {
 	if query.Get("async_insert") != "0" {
 		t.Errorf("async_insert = %q, want 0", query.Get("async_insert"))
 	}
+	if query.Get("date_time_input_format") != "best_effort" {
+		t.Errorf("date_time_input_format = %q, want best_effort; RFC 3339 timestamps are refused without it", query.Get("date_time_input_format"))
+	}
 	if query.Get("insert_deduplication_token") == "" {
 		t.Error("expected a deduplication token")
 	}
