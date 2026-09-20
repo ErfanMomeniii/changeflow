@@ -71,8 +71,8 @@ func (f *settingsServer) recorded() ([]string, int, int) {
 	return append([]string(nil), f.applied...), f.refreshed, f.merged
 }
 
-// Refreshing during a scan is work done over data that is about to grow, so it is off for
-// its duration.
+// Refreshing during a scan is work done over data that is about to grow, so it is off for its
+// duration.
 func TestBulkLoadTurnsOffRefreshing(t *testing.T) {
 	server := &settingsServer{declared: `"refresh_interval":"5s","number_of_replicas":"2"`}
 	s := server.sink(t)
@@ -95,8 +95,7 @@ func TestBulkLoadTurnsOffRefreshing(t *testing.T) {
 	}
 }
 
-// What was replaced has to come back exactly. Restoring a guessed value would quietly
-// change an index's replication or refresh behaviour as a side effect of a rebuild.
+// What was replaced has to come back exactly.
 func TestBulkLoadRestoresWhatItReplaced(t *testing.T) {
 	server := &settingsServer{declared: `"refresh_interval":"5s","number_of_replicas":"2"`}
 	s := server.sink(t)
@@ -119,8 +118,8 @@ func TestBulkLoadRestoresWhatItReplaced(t *testing.T) {
 	}
 }
 
-// An index that never declared these settings must go back to inheriting the cluster
-// default, not to whatever this build believes the default to be.
+// An index that never declared these settings must go back to inheriting the cluster default,
+// not to whatever this build believes the default to be.
 func TestBulkLoadClearsSettingsTheIndexNeverDeclared(t *testing.T) {
 	server := &settingsServer{declared: `"number_of_shards":"1"`}
 	s := server.sink(t)
@@ -137,9 +136,7 @@ func TestBulkLoadClearsSettingsTheIndexNeverDeclared(t *testing.T) {
 	}
 }
 
-// A scan killed partway through leaves refreshing off. Reading that back as the value to
-// restore would leave the index never refreshing, while an alias was moved to it: readers
-// would find it empty and nothing would say why.
+// A scan killed partway through leaves refreshing off.
 func TestBulkLoadTreatsRefreshingAlreadyOffAsLeftBehind(t *testing.T) {
 	server := &settingsServer{declared: `"refresh_interval":"-1","number_of_replicas":"0"`}
 	s := server.sink(t)
@@ -210,8 +207,8 @@ func TestForceMergeAsksForASingleSegment(t *testing.T) {
 	}
 }
 
-// A merge that fails leaves an index that is slower to search, not a wrong one, so the
-// error is reported for the caller to log rather than being hidden.
+// A merge that fails leaves an index that is slower to search, not a wrong one, so the error
+// is reported for the caller to log rather than being hidden.
 func TestForceMergeReportsAFailure(t *testing.T) {
 	server := &settingsServer{declared: `"refresh_interval":"5s"`, mergeStatus: http.StatusTooManyRequests}
 	s := server.sink(t)

@@ -27,9 +27,6 @@ type Metrics struct {
 }
 
 // New registers a stream's metrics.
-//
-// Every series is labelled by stream, because a process may run several and an
-// aggregate lag figure hides the one stream that is stuck.
 func New(reg prometheus.Registerer, stream string) *Metrics {
 	labels := prometheus.Labels{"stream": stream}
 	factory := promauto{reg}

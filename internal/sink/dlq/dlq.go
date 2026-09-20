@@ -49,7 +49,7 @@ type Writer struct {
 
 const defaultMaxBytes = 64 << 20
 
-// New validates options and prepares a writer. The file is created on first use.
+// New validates options and prepares a writer.
 func New(opts Options) (*Writer, error) {
 	if opts.Dir == "" {
 		return nil, errors.New("dlq: a directory is required")
@@ -176,9 +176,6 @@ func (w *Writer) Close() error {
 }
 
 // Files lists a stream's dead letter files, current and rotated, oldest name first.
-//
-// A missing directory is not an error: nothing has been refused, which is the state
-// everything hopes to be in.
 func Files(dir, stream string) ([]string, error) {
 	if dir == "" {
 		return nil, nil
@@ -196,10 +193,6 @@ func Files(dir, stream string) ([]string, error) {
 }
 
 // Count reports how many documents a stream has had refused, across rotated files.
-//
-// Records are counted rather than parsed: any value above zero already means the
-// destination is missing rows, and a file being unreadable in part must not hide the
-// rest of a count that says so.
 func Count(dir, stream string) (int, error) {
 	files, err := Files(dir, stream)
 	if err != nil {
@@ -237,10 +230,6 @@ func countLines(path string) (int, error) {
 }
 
 // Read loads every record from a file.
-//
-// A line that cannot be parsed is an error rather than a skip: these records exist
-// because something was already lost once, and quietly ignoring one would lose it
-// again.
 func Read(path string) ([]Record, error) {
 	f, err := os.Open(path)
 	if err != nil {

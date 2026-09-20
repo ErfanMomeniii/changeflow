@@ -126,8 +126,8 @@ streams:
 	}
 }
 
-// Falling back to an empty value would produce a config that looks valid and then
-// fails to connect, so a missing variable is an error that names it.
+// Falling back to an empty value would produce a config that looks valid and then fails to
+// connect, so a missing variable is an error that names it.
 func TestMissingEnvVarIsReportedByName(t *testing.T) {
 	_, err := load(t, `
 source:
@@ -161,8 +161,8 @@ func TestEnvDefaultSyntax(t *testing.T) {
 	}
 }
 
-// A typo in a field name must fail rather than being silently ignored, which
-// would leave the operator believing a setting took effect.
+// A typo in a field name must fail rather than being silently ignored, which would leave the
+// operator believing a setting took effect.
 func TestUnknownFieldIsRejected(t *testing.T) {
 	_, err := load(t, minimalYAML+`
     batch:
@@ -255,8 +255,8 @@ func TestValidationRejectsBadConfigurations(t *testing.T) {
 	}
 }
 
-// The checkpoint table's stream column bounds this, and finding out at the first
-// write rather than at startup would mean a stream that can never checkpoint.
+// The checkpoint table's stream column bounds this, and finding out at the first write rather
+// than at startup would mean a stream that can never checkpoint.
 func TestStreamNameLengthIsBounded(t *testing.T) {
 	long := strings.Repeat("s", 49)
 	_, err := load(t, strings.Replace(minimalYAML, "orders_to_es:", long+":", 1))
@@ -384,8 +384,8 @@ streams:
 	}
 }
 
-// Elasticsearch options on a ClickHouse sink are almost certainly a mistake, and
-// silently ignoring them hides it.
+// Elasticsearch options on a ClickHouse sink are almost certainly a mistake, and silently
+// ignoring them hides it.
 func TestSinkOptionsMustMatchSinkType(t *testing.T) {
 	_, err := load(t, `
 source:
@@ -410,8 +410,7 @@ streams:
 	}
 }
 
-// An explicit false must be honoured, which a plain bool defaulting to true could
-// not express.
+// An explicit false must be honoured, which a plain bool defaulting to true could not express.
 func TestSnapshotCanBeDisabledExplicitly(t *testing.T) {
 	cfg := mustLoad(t, minimalYAML+`
     snapshot:
@@ -459,8 +458,8 @@ func TestMemoryEstimateAccountsForBuffersAndBatches(t *testing.T) {
 	}
 }
 
-// A config whose bound exceeds the process memory limit is a scheduled crash, so
-// it is better refused at startup than discovered under load.
+// A config whose bound exceeds the process memory limit is a scheduled crash, so it is better
+// refused at startup than discovered under load.
 func TestConfigExceedingMemoryLimitIsRejected(t *testing.T) {
 	cfg := mustLoad(t, minimalYAML)
 	tiny := int64(cfg.EstimatedMemory() / 2)
@@ -472,8 +471,7 @@ func TestConfigExceedingMemoryLimitIsRejected(t *testing.T) {
 	}
 }
 
-// An empty value takes the default, so disabling the endpoint needs a value of its
-// own. Two processes on one machine would otherwise fight over the port.
+// An empty value takes the default, so disabling the endpoint needs a value of its own.
 func TestMetricsCanBeDisabledExplicitly(t *testing.T) {
 	cfg := mustLoad(t, minimalYAML+"runtime:\n  metrics_addr: \"off\"\n")
 	if cfg.Runtime.MetricsEnabled() {

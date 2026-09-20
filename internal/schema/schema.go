@@ -58,8 +58,8 @@ func (t *TableMeta) ColumnNames() []string {
 	return out
 }
 
-// PrimaryKeyPositions returns the ordinal positions of the primary key columns,
-// which is what a binlog row needs in order to be keyed.
+// PrimaryKeyPositions returns the ordinal positions of the primary key columns, which is what
+// a binlog row needs in order to be keyed.
 func (t *TableMeta) PrimaryKeyPositions() ([]int, error) {
 	if len(t.PrimaryKey) == 0 {
 		return nil, fmt.Errorf("table %s has no primary key, so its rows have no stable identity and cannot be replicated idempotently; set mapping.key to a unique index", t.Name())
@@ -75,8 +75,8 @@ func (t *TableMeta) PrimaryKeyPositions() ([]int, error) {
 	return out, nil
 }
 
-// ResolveKey validates an explicitly configured key, or falls back to the primary
-// key when none is configured.
+// ResolveKey validates an explicitly configured key, or falls back to the primary key when
+// none is configured.
 func (t *TableMeta) ResolveKey(configured []string) ([]string, error) {
 	if len(configured) == 0 {
 		if len(t.PrimaryKey) == 0 {
@@ -104,11 +104,8 @@ func (t *TableMeta) ResolveKey(configured []string) ([]string, error) {
 	return configured, nil
 }
 
-// SelectColumns applies a mapping's include or exclude list, returning the
-// columns a stream will actually read, in ordinal order.
-//
-// Key columns are always retained: without them a row cannot be identified, so
-// excluding one is a mistake rather than a preference.
+// SelectColumns applies a mapping's include or exclude list, returning the columns a stream
+// will actually read, in ordinal order.
 func (t *TableMeta) SelectColumns(include, exclude, key []string) ([]Column, error) {
 	if len(include) > 0 && len(exclude) > 0 {
 		return nil, fmt.Errorf("table %s: include and exclude cannot both be set", t.Name())

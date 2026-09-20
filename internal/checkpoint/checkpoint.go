@@ -6,12 +6,11 @@ import (
 	"time"
 )
 
-// SchemaVersion identifies the layout of a stored checkpoint. A reader finding a higher
-// version must refuse the row rather than guess at fields it does not know.
+// SchemaVersion identifies the layout of a stored checkpoint.
 const SchemaVersion = 1
 
-// ErrNotFound reports that a stream has no checkpoint yet, which is how a first-ever run
-// is distinguished from a lost one.
+// ErrNotFound reports that a stream has no checkpoint yet, which is how a first-ever run is
+// distinguished from a lost one.
 var ErrNotFound = errors.New("checkpoint not found")
 
 // Checkpoint is one stream's durable position.
@@ -31,8 +30,8 @@ type Checkpoint struct {
 	UpdatedAt         time.Time
 }
 
-// LagAt reports how far behind the source this checkpoint was at a given moment, and
-// false when nothing has been applied: zero lag and no data must not look alike.
+// LagAt reports how far behind the source this checkpoint was at a given moment, and false
+// when nothing has been applied: zero lag and no data must not look alike.
 func (c Checkpoint) LagAt(now time.Time) (time.Duration, bool) {
 	if c.LastEventTsMs == 0 {
 		return 0, false
@@ -45,9 +44,6 @@ func (c Checkpoint) LagAt(now time.Time) (time.Duration, bool) {
 }
 
 // ClearSnapshot resets the scan state so the next run scans the table again.
-//
-// The stream position is left alone: a rebuild captures a fresh one when its scan starts,
-// and discarding the current one would strand any progress made since.
 func (c *Checkpoint) ClearSnapshot() {
 	c.SnapshotDone = false
 	c.SnapshotStartGTID = ""
@@ -57,8 +53,7 @@ func (c *Checkpoint) ClearSnapshot() {
 	c.SnapshotRowsTotal = 0
 }
 
-// Store persists checkpoints. Save must be atomic per stream: a torn write would leave a
-// position that was never reached.
+// Store persists checkpoints.
 type Store interface {
 	Load(ctx context.Context, stream string) (Checkpoint, error)
 	Save(ctx context.Context, cp Checkpoint) error

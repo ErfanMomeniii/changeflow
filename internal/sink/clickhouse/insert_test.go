@@ -150,8 +150,8 @@ func TestWriteInsertsRowsWithReplicationColumns(t *testing.T) {
 	}
 }
 
-// ClickHouse has no delete: a removed row is superseded by a tombstone carrying its
-// key, which the engine drops during a merge.
+// ClickHouse has no delete: a removed row is superseded by a tombstone carrying its key, which
+// the engine drops during a merge.
 func TestDeleteBecomesATombstoneRow(t *testing.T) {
 	rec := &recorder{}
 	s := newTestSink(t, rec, nil)
@@ -202,8 +202,8 @@ func TestBodyIsJSONEachRow(t *testing.T) {
 	}
 }
 
-// An empty body would be a row with only replication columns, which is meaningless and
-// would insert a tombstone for no key.
+// An empty body would be a row with only replication columns, which is meaningless and would
+// insert a tombstone for no key.
 func TestDocumentWithoutABodyIsRefused(t *testing.T) {
 	rec := &recorder{}
 	s := newTestSink(t, rec, nil)
@@ -250,8 +250,6 @@ func TestTooManyRequestsIsRetried(t *testing.T) {
 }
 
 // JSONEachRow reports no per-row outcome, so a rejection applies to the whole request.
-// Halving finds the row responsible, so one bad value does not discard the batch around
-// it.
 func TestARejectedRowIsIsolatedFromTheBatch(t *testing.T) {
 	const badKey = "77"
 	rec := &recorder{respond: func(_ int, body string) (int, string) {

@@ -55,9 +55,8 @@ func TestBatcherHoldsDocsUntilRowLimit(t *testing.T) {
 	}
 }
 
-// The byte limit exists to keep a request under what the destination accepts, so a
-// batch must not exceed it. The document that would overflow starts the next batch
-// rather than being appended to this one.
+// The byte limit exists to keep a request under what the destination accepts, so a batch must
+// not exceed it.
 func TestBatcherFlushesBeforeExceedingByteLimit(t *testing.T) {
 	b, _ := newTestBatcher(t, Limits{MaxRows: 1000, MaxBytes: 300, FlushInterval: time.Second})
 	if got := b.Add(doc("1", 100)); got != nil {
@@ -85,8 +84,8 @@ func TestBatcherFlushesWhenByteLimitIsReachedExactly(t *testing.T) {
 	}
 }
 
-// A document larger than the whole byte budget must still be delivered, or it
-// would wedge the stream permanently.
+// A document larger than the whole byte budget must still be delivered, or it would wedge the
+// stream permanently.
 func TestBatcherEmitsOversizedDocument(t *testing.T) {
 	b, _ := newTestBatcher(t, Limits{MaxRows: 1000, MaxBytes: 100, FlushInterval: time.Second})
 	flushed := b.Add(doc("huge", 5000))
@@ -98,8 +97,7 @@ func TestBatcherEmitsOversizedDocument(t *testing.T) {
 	}
 }
 
-// An oversized document arriving after other docs must not lose them or reorder
-// them.
+// An oversized document arriving after other docs must not lose them or reorder them.
 func TestBatcherFlushesPendingBeforeOversizedDocument(t *testing.T) {
 	b, _ := newTestBatcher(t, Limits{MaxRows: 1000, MaxBytes: 100, FlushInterval: time.Second})
 	b.Add(doc("a", 10))
@@ -113,8 +111,8 @@ func TestBatcherFlushesPendingBeforeOversizedDocument(t *testing.T) {
 	}
 }
 
-// The interval is measured from the first document in the batch, so latency stays
-// bounded rather than resetting with every arrival.
+// The interval is measured from the first document in the batch, so latency stays bounded
+// rather than resetting with every arrival.
 func TestBatcherIntervalRunsFromFirstDocument(t *testing.T) {
 	b, clock := newTestBatcher(t, Limits{MaxRows: 1000, MaxBytes: 1 << 20, FlushInterval: 500 * time.Millisecond})
 	b.Add(doc("1", 1))
@@ -154,8 +152,8 @@ func TestBatcherResetsIntervalAfterFlush(t *testing.T) {
 	}
 }
 
-// Writes to one key must reach the destination in the order they happened, or a
-// delete could be undone by an earlier insert.
+// Writes to one key must reach the destination in the order they happened, or a delete could
+// be undone by an earlier insert.
 func TestBatcherPreservesPerKeyOrder(t *testing.T) {
 	b, _ := newTestBatcher(t, Limits{MaxRows: 100, MaxBytes: 1 << 20, FlushInterval: time.Second})
 	b.Add(cdc.Doc{Key: "42", Version: 1, Body: []byte(`{"v":1}`)})
@@ -179,8 +177,8 @@ func TestBatcherPreservesPerKeyOrder(t *testing.T) {
 	}
 }
 
-// The caller keeps the flushed slice while the batcher fills the next one, so the
-// two must not share memory.
+// The caller keeps the flushed slice while the batcher fills the next one, so the two must not
+// share memory.
 func TestFlushedBatchIsNotAliasedByLaterAdds(t *testing.T) {
 	b, _ := newTestBatcher(t, Limits{MaxRows: 2, MaxBytes: 1 << 20, FlushInterval: time.Second})
 	b.Add(doc("a", 1))

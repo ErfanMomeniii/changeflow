@@ -185,8 +185,7 @@ func TestStreamerEmitsInsertUpdateDelete(t *testing.T) {
 	}
 }
 
-// Versions must increase, since they are what decides which of two writes to one
-// key wins.
+// Versions must increase, since they are what decides which of two writes to one key wins.
 func TestStreamerVersionsIncrease(t *testing.T) {
 	h := newLiveHarnessForIDs(t, idRange{9100, 9199}, "shop.orders")
 	for i := 0; i < 3; i++ {
@@ -203,8 +202,8 @@ func TestStreamerVersionsIncrease(t *testing.T) {
 	}
 }
 
-// The values must arrive in the shapes the transform expects, which is the contract
-// between decoding and encoding.
+// The values must arrive in the shapes the transform expects, which is the contract between
+// decoding and encoding.
 func TestStreamerDecodesValuesForTheTransform(t *testing.T) {
 	h := newLiveHarnessForIDs(t, idRange{9300, 9300}, "shop.orders")
 	h.exec(t, `INSERT INTO orders (id,user_id,status,channels,total_amount,is_gift,placed_at)
@@ -251,8 +250,8 @@ func asInt(v any) (int64, bool) {
 	}
 }
 
-// Tables outside the configured set must not produce events, so an unrelated write
-// cannot consume versions or reach a sink.
+// Tables outside the configured set must not produce events, so an unrelated write cannot
+// consume versions or reach a sink.
 func TestStreamerIgnoresUnwatchedTables(t *testing.T) {
 	h := newLiveHarness(t, "shop.order_items")
 	h.exec(t, "INSERT INTO orders (id,user_id,status,total_amount) VALUES (9400,5,'paid',1.00)")
@@ -267,8 +266,8 @@ func TestStreamerIgnoresUnwatchedTables(t *testing.T) {
 	}
 }
 
-// Adding a column changes the row width, and a stale definition would attribute
-// values to the wrong fields.
+// Adding a column changes the row width, and a stale definition would attribute values to the
+// wrong fields.
 func TestStreamerReloadsDefinitionAfterAlter(t *testing.T) {
 	h := newLiveHarnessForIDs(t, idRange{9500, 9599}, "shop.orders")
 	t.Cleanup(func() {
@@ -292,12 +291,8 @@ func TestStreamerReloadsDefinitionAfterAlter(t *testing.T) {
 	}
 }
 
-// A position must be the cumulative set of executed transactions, not the last
-// transaction's identifier.
-//
-// Resuming from a single identifier tells the server we have executed only that
-// transaction, so it replays everything else it retains. That resurrects rows whose
-// deletes have since been purged, and re-does the entire binlog on every restart.
+// A position must be the cumulative set of executed transactions, not the last transaction's
+// identifier.
 func TestEventsCarryTheCumulativeExecutedSet(t *testing.T) {
 	h := newLiveHarnessForIDs(t, idRange{9600, 9699}, "shop.orders")
 	t.Cleanup(func() { h.writer.Exec("DELETE FROM orders WHERE id BETWEEN 9600 AND 9700") })
@@ -324,13 +319,8 @@ func TestEventsCarryTheCumulativeExecutedSet(t *testing.T) {
 	}
 }
 
-// Resuming from a reported position must not re-deliver rows from transactions
-// already folded into it.
-//
-// The transaction an event belongs to is deliberately excluded from its position,
-// since it may be only partly written, so that one transaction does replay. Earlier
-// ones must not: before the position became a cumulative set, resuming replayed the
-// entire retained binlog.
+// Resuming from a reported position must not re-deliver rows from transactions already folded
+// into it.
 func TestResumingFromAPositionDoesNotReplayEarlierTransactions(t *testing.T) {
 	h := newLiveHarnessForIDs(t, idRange{9700, 9799}, "shop.orders")
 	t.Cleanup(func() { h.writer.Exec("DELETE FROM orders WHERE id BETWEEN 9700 AND 9800") })
@@ -384,9 +374,9 @@ collect:
 	}
 }
 
-// Replaying history across a schema change is normal, and a row written before a
-// column was dropped must still decode: refusing would leave the stream permanently
-// stuck at that position.
+// Replaying history across a schema change is normal, and a row written before a column was
+// dropped must still decode: refusing would leave the stream permanently stuck at that
+// position.
 func TestRowsWrittenBeforeAColumnWasDroppedStillDecode(t *testing.T) {
 	h := newLiveHarnessForIDs(t, idRange{9900, 9999}, "shop.orders")
 	t.Cleanup(func() {
@@ -420,8 +410,8 @@ func TestRowsWrittenBeforeAColumnWasDroppedStillDecode(t *testing.T) {
 	}
 }
 
-// A column added after a row was written has no value in it, so it decodes as null
-// rather than shifting every later value along by one.
+// A column added after a row was written has no value in it, so it decodes as null rather than
+// shifting every later value along by one.
 func TestRowsWrittenBeforeAColumnWasAddedStillDecode(t *testing.T) {
 	h := newLiveHarnessForIDs(t, idRange{9800, 9899}, "shop.orders")
 	t.Cleanup(func() {
@@ -475,9 +465,7 @@ func TestNewRejectsIncompleteOptions(t *testing.T) {
 	}
 }
 
-// The one failure a restart cannot fix has to say so. Without this it arrives as a bare
-// server error, and the actual remedy — a rescan — is left for someone to work out during
-// an incident.
+// The one failure a restart cannot fix has to say so.
 func TestAPurgedPositionSaysWhatToDoAboutIt(t *testing.T) {
 	err := explain(&mysql.MyError{
 		Code:    errBinlogReadFailure,
@@ -494,8 +482,8 @@ func TestAPurgedPositionSaysWhatToDoAboutIt(t *testing.T) {
 	}
 }
 
-// Everything else is a connection or protocol problem a restart may well fix, and
-// dressing it up as a lost position would send someone to rescan a table for nothing.
+// Everything else is a connection or protocol problem a restart may well fix, and dressing it
+// up as a lost position would send someone to rescan a table for nothing.
 func TestOtherServerErrorsArePassedThrough(t *testing.T) {
 	original := &mysql.MyError{Code: 1045, Message: "Access denied for user 'cdc'@'%'"}
 	err := explain(original)

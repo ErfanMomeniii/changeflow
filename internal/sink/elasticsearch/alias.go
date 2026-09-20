@@ -9,10 +9,6 @@ import (
 )
 
 // PromoteAlias points the read alias at the index this sink writes to.
-//
-// One request, so readers never see the alias resolve to nothing or to a half-built
-// index, and the index they came from is still there to move back to. A no-op when the
-// alias already points only here, so it can run after every completed scan.
 func (s *Sink) PromoteAlias(ctx context.Context) error {
 	if s.opts.Alias == "" {
 		return nil

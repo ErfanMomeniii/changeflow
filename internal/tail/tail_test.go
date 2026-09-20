@@ -50,8 +50,8 @@ func TestEnumLabelRefusesUnresolvableValues(t *testing.T) {
 	}
 }
 
-// Without column metadata there are no labels, and guessing would silently write
-// wrong values, so the caller must fall through to printing the raw number.
+// Without column metadata there are no labels, and guessing would silently write wrong values,
+// so the caller must fall through to printing the raw number.
 func TestEnumLabelWithoutLabelsDoesNotGuess(t *testing.T) {
 	if got, ok := enumLabel(nil, int64(1)); ok {
 		t.Fatalf("expected no resolution without labels, got %q", got)
@@ -131,8 +131,8 @@ func TestParseFiltersIsCaseInsensitive(t *testing.T) {
 	}
 }
 
-// No filters means every table, so the map must stay nil rather than becoming an
-// empty map that would reject everything.
+// No filters means every table, so the map must stay nil rather than becoming an empty map
+// that would reject everything.
 func TestParseFiltersEmptyMeansAllTables(t *testing.T) {
 	if f := parseFilters(nil); f != nil {
 		t.Fatalf("expected nil for no filters, got %v", f)
@@ -164,9 +164,7 @@ func TestCollapseFlattensWhitespace(t *testing.T) {
 	}
 }
 
-// A latin1 column arrives as a Go string holding non-UTF-8 bytes. Printing it
-// verbatim produces mojibake, so it must be shown as hex until something knows
-// the column's charset and can convert it.
+// A latin1 column arrives as a Go string holding non-UTF-8 bytes.
 func TestFormatScalarHexEncodesNonUTF8Strings(t *testing.T) {
 	latin1Cafe := string([]byte{0x63, 0x61, 0x66, 0xE9})
 	if got := formatScalar(latin1Cafe); got != "0x636166e9" {

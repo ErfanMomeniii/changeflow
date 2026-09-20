@@ -134,8 +134,7 @@ func TestRenameAndIncludeAreApplied(t *testing.T) {
 	}
 }
 
-// An unsigned 64-bit value above 2^63 must survive exactly. Passing it through a
-// float, or a signed conversion, would corrupt it silently.
+// An unsigned 64-bit value above 2^63 must survive exactly.
 func TestLargeUnsignedIntegerIsExact(t *testing.T) {
 	m := ordersMeta(t)
 	p := newPlan(t, m, config.Mapping{Key: []string{"id"}, Include: []string{"id"}}, DialectElasticsearch)
@@ -150,8 +149,8 @@ func TestLargeUnsignedIntegerIsExact(t *testing.T) {
 	}
 }
 
-// Elasticsearch has no exact decimal type, so the value is written as a string to
-// keep it byte-identical, including its trailing zero.
+// Elasticsearch has no exact decimal type, so the value is written as a string to keep it
+// byte-identical, including its trailing zero.
 func TestDecimalIsQuotedForElasticsearch(t *testing.T) {
 	m := ordersMeta(t)
 	p := newPlan(t, m, config.Mapping{Key: []string{"id"}, Include: []string{"id", "total_amount"}}, DialectElasticsearch)
@@ -169,8 +168,8 @@ func TestDecimalIsUnquotedForClickHouse(t *testing.T) {
 	}
 }
 
-// The binlog stores an ENUM as a member number; writing that number would be
-// meaningless in a search index.
+// The binlog stores an ENUM as a member number; writing that number would be meaningless in a
+// search index.
 func TestEnumIsWrittenAsItsLabel(t *testing.T) {
 	m := ordersMeta(t)
 	p := newPlan(t, m, config.Mapping{Key: []string{"id"}, Include: []string{"id", "status"}}, DialectElasticsearch)
@@ -179,8 +178,7 @@ func TestEnumIsWrittenAsItsLabel(t *testing.T) {
 	}
 }
 
-// A SET is a bitmask, and its members are written as an array in declaration
-// order.
+// A SET is a bitmask, and its members are written as an array in declaration order.
 func TestSetIsWrittenAsAnArrayOfLabels(t *testing.T) {
 	m := ordersMeta(t)
 	p := newPlan(t, m, config.Mapping{Key: []string{"id"}, Include: []string{"id", "channels"}}, DialectElasticsearch)
@@ -200,8 +198,7 @@ func TestEmptySetIsAnEmptyArray(t *testing.T) {
 	}
 }
 
-// A latin1 column's bytes are not UTF-8. Writing them unchanged produces mojibake
-// in the destination, so they are converted using the column's charset.
+// A latin1 column's bytes are not UTF-8.
 func TestLatin1ColumnIsConvertedToUTF8(t *testing.T) {
 	m := ordersMeta(t)
 	p := newPlan(t, m, config.Mapping{Key: []string{"id"}, Include: []string{"id", "note_latin1"}}, DialectElasticsearch)
@@ -219,8 +216,8 @@ func TestTinyIntOneBecomesBoolean(t *testing.T) {
 	}
 }
 
-// JSON is passed through verbatim: re-encoding it could reorder keys or lose
-// numeric precision.
+// JSON is passed through verbatim: re-encoding it could reorder keys or lose numeric
+// precision.
 func TestJSONIsPassedThroughVerbatim(t *testing.T) {
 	m := ordersMeta(t)
 	p := newPlan(t, m, config.Mapping{Key: []string{"id"}, Include: []string{"id", "metadata"}}, DialectElasticsearch)
@@ -240,8 +237,8 @@ func TestNullIsWrittenAsNull(t *testing.T) {
 	}
 }
 
-// DATETIME is wall-clock with no zone, so it is interpreted in the source's zone
-// and written as an instant.
+// DATETIME is wall-clock with no zone, so it is interpreted in the source's zone and written
+// as an instant.
 func TestDatetimeIsInterpretedInSourceZone(t *testing.T) {
 	m := ordersMeta(t)
 	tehran, err := time.LoadLocation("Asia/Tehran")
@@ -328,8 +325,7 @@ func TestDeleteProducesATombstoneKeyedFromBefore(t *testing.T) {
 	}
 }
 
-// An update that changes the key must remove the old document. Without this, the
-// old key is orphaned in the destination forever, since no later event mentions it.
+// An update that changes the key must remove the old document.
 func TestKeyChangingUpdateProducesDeleteThenUpsert(t *testing.T) {
 	m := ordersMeta(t)
 	p := newPlan(t, m, config.Mapping{Key: []string{"id"}}, DialectElasticsearch)
@@ -370,8 +366,7 @@ func TestUpdateWithoutKeyChangeProducesOneUpsert(t *testing.T) {
 	}
 }
 
-// A snapshot row is an upsert, and the destination cannot tell it apart from an
-// insert.
+// A snapshot row is an upsert, and the destination cannot tell it apart from an insert.
 func TestSnapshotRowIsAnUpsert(t *testing.T) {
 	m := ordersMeta(t)
 	p := newPlan(t, m, config.Mapping{Key: []string{"id"}}, DialectElasticsearch)
@@ -418,8 +413,8 @@ func TestCompositeKeyEscapesSeparatorInValues(t *testing.T) {
 	}
 }
 
-// Elasticsearch refuses an _id longer than 512 bytes, so an over-long key is
-// replaced by a stable digest rather than failing every write.
+// Elasticsearch refuses an _id longer than 512 bytes, so an over-long key is replaced by a
+// stable digest rather than failing every write.
 func TestOverlongKeyIsHashed(t *testing.T) {
 	m := &schema.TableMeta{
 		Schema: "shop", Table: "wide",
@@ -444,8 +439,8 @@ func TestOverlongKeyIsHashed(t *testing.T) {
 	}
 }
 
-// A null in a key column cannot identify a row, so it is refused rather than
-// written under a key that reads as the string "null".
+// A null in a key column cannot identify a row, so it is refused rather than written under a
+// key that reads as the string "null".
 func TestNullKeyIsRefused(t *testing.T) {
 	m := ordersMeta(t)
 	p := newPlan(t, m, config.Mapping{Key: []string{"id"}}, DialectElasticsearch)
@@ -465,8 +460,8 @@ func TestApplyRejectsRowOfWrongWidth(t *testing.T) {
 	}
 }
 
-// An unsupported charset must fail loudly rather than write bytes that are not
-// valid UTF-8 into a text field.
+// An unsupported charset must fail loudly rather than write bytes that are not valid UTF-8
+// into a text field.
 func TestUnsupportedCharsetIsRefusedAtCompileTime(t *testing.T) {
 	m := ordersMeta(t)
 	for i := range m.Columns {
@@ -494,8 +489,8 @@ func TestCompileRejectsUnsupportedColumnType(t *testing.T) {
 	}
 }
 
-// The body is produced by a single encode, so a plan reused across events must not
-// leak the previous document into the next.
+// The body is produced by a single encode, so a plan reused across events must not leak the
+// previous document into the next.
 func TestPlanIsReusableAcrossEvents(t *testing.T) {
 	m := ordersMeta(t)
 	p := newPlan(t, m, config.Mapping{Key: []string{"id"}, Include: []string{"id", "status"}}, DialectElasticsearch)

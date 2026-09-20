@@ -54,9 +54,8 @@ func sanitizeForTable(name string) string {
 	return string(out)
 }
 
-// The driver returns a TIMESTAMP as time.Time or as raw bytes depending on the
-// DSN's parseTime parameter. Depending on one spelling made every checkpoint load
-// fail against a connection string written the obvious way.
+// The driver returns a TIMESTAMP as time.Time or as raw bytes depending on the DSN's parseTime
+// parameter.
 func TestMySQLStoreReadsTimestampsWithoutParseTime(t *testing.T) {
 	dsn := os.Getenv("CHANGEFLOW_TEST_META_DSN")
 	if dsn == "" {
@@ -175,8 +174,8 @@ func TestMySQLStoreUpsertsExistingStream(t *testing.T) {
 	}
 }
 
-// A binary cursor must survive unchanged: a primary key can hold arbitrary bytes,
-// and a mangled cursor would resume a snapshot in the wrong place.
+// A binary cursor must survive unchanged: a primary key can hold arbitrary bytes, and a
+// mangled cursor would resume a snapshot in the wrong place.
 func TestMySQLStorePreservesBinaryCursor(t *testing.T) {
 	store, _ := testStore(t)
 	cursor := []byte{0x00, 0xff, 0x41, 0x00, 0xfe}
@@ -221,8 +220,8 @@ func TestMySQLStoreRejectsOversizedStreamName(t *testing.T) {
 	}
 }
 
-// A restart moments after an abrupt kill must be able to take the lock once the
-// server reaps the dead session, rather than refusing to start.
+// A restart moments after an abrupt kill must be able to take the lock once the server reaps
+// the dead session, rather than refusing to start.
 func TestStreamLockWaitsBrieflyForAContendedLock(t *testing.T) {
 	store, _ := testStore(t)
 	store.LockTimeout = 2 * time.Second
@@ -285,9 +284,7 @@ func TestStreamLockIsReacquirableAfterRelease(t *testing.T) {
 	}
 }
 
-// MySQL advisory locks belong to a session. If the lock were taken on a pooled
-// connection, other queries returning that connection to the pool would drop it
-// silently, and two processes could then replicate one stream.
+// MySQL advisory locks belong to a session.
 func TestStreamLockSurvivesPoolActivity(t *testing.T) {
 	store, db := testStore(t)
 	ctx := t.Context()
@@ -313,8 +310,8 @@ func TestStreamLockSurvivesPoolActivity(t *testing.T) {
 	}
 }
 
-// The allocator's guarantees have to hold against the real store, not only the
-// in-memory one, since this is where a lost or truncated watermark would appear.
+// The allocator's guarantees have to hold against the real store, not only the in-memory one,
+// since this is where a lost or truncated watermark would appear.
 func TestAllocatorAgainstMySQLStoreNeverRegresses(t *testing.T) {
 	store, _ := testStore(t)
 	ctx := t.Context()
@@ -388,8 +385,8 @@ func TestNewMySQLStoreAcceptsQualifiedName(t *testing.T) {
 	}
 }
 
-// A stopped stream's reason belongs where an operator looks for it, and it has to survive
-// the process that failed.
+// A stopped stream's reason belongs where an operator looks for it, and it has to survive the
+// process that failed.
 func TestRecordErrorKeepsTheReasonAStreamStopped(t *testing.T) {
 	store, _ := testStore(t)
 	if err := store.Save(t.Context(), Checkpoint{Stream: "orders", GTIDSet: "uuid:1-5"}); err != nil {
@@ -427,8 +424,8 @@ func TestRecordErrorClearsAResolvedFailure(t *testing.T) {
 	}
 }
 
-// A driver error can carry a whole request body, which must not fill the column and fail
-// the write that is trying to explain a failure.
+// A driver error can carry a whole request body, which must not fill the column and fail the
+// write that is trying to explain a failure.
 func TestRecordErrorTruncatesAnOverlongReason(t *testing.T) {
 	store, _ := testStore(t)
 	if err := store.Save(t.Context(), Checkpoint{Stream: "orders"}); err != nil {
@@ -449,8 +446,8 @@ func TestRecordErrorTruncatesAnOverlongReason(t *testing.T) {
 	}
 }
 
-// Nothing has failed about a stream that has never run, so there is no row to update and
-// that is not an error.
+// Nothing has failed about a stream that has never run, so there is no row to update and that
+// is not an error.
 func TestRecordErrorOnAnUnknownStreamIsNotAnError(t *testing.T) {
 	store, _ := testStore(t)
 	if err := store.RecordError(t.Context(), "never_ran", "something"); err != nil {
@@ -458,9 +455,8 @@ func TestRecordErrorOnAnUnknownStreamIsNotAnError(t *testing.T) {
 	}
 }
 
-// A running service should hold no DDL rights, and MySQL refuses CREATE TABLE IF NOT
-// EXISTS without CREATE even when the table already exists. A stream that cannot start
-// under the grants it is documented to need would be found in production, not here.
+// A running service should hold no DDL rights, and MySQL refuses CREATE TABLE IF NOT EXISTS
+// without CREATE even when the table already exists.
 func TestEnsureSchemaWorksWithDMLRightsOnly(t *testing.T) {
 	adminDSN := os.Getenv("CHANGEFLOW_TEST_WRITE_DSN")
 	if adminDSN == "" {

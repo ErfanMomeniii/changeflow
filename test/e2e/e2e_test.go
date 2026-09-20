@@ -710,8 +710,7 @@ func TestUpdateAndDeletePropagate(t *testing.T) {
 	})
 }
 
-// A key change has to remove the old document. Nothing later mentions that key
-// again, so a miss here leaves it in the index forever.
+// A key change has to remove the old document.
 func TestKeyChangeRemovesTheOldDocument(t *testing.T) {
 	e := setup(t)
 	e.start()
@@ -725,9 +724,8 @@ func TestKeyChangeRemovesTheOldDocument(t *testing.T) {
 	})
 }
 
-// Two streams over one table must each receive every change, from a single connection
-// to the source. Ten streams reading the same binlog separately would cost the master
-// ten dump threads and ten copies of the same data.
+// Two streams over one table must each receive every change, from a single connection to the
+// source.
 func TestOneConnectionServesTwoStreams(t *testing.T) {
 	e := setup(t)
 	e.requireElasticsearch()
@@ -777,9 +775,9 @@ func TestOneConnectionServesTwoStreams(t *testing.T) {
 	}
 }
 
-// The design's central claim: a crash between writing to the destination and
-// recording the position must lose nothing, because the position only advances
-// after an acknowledgement and a replayed write is discarded as stale.
+// The design's central claim: a crash between writing to the destination and recording the
+// position must lose nothing, because the position only advances after an acknowledgement and
+// a replayed write is discarded as stale.
 func TestConvergesAfterAnAbruptKill(t *testing.T) {
 	e := setup(t)
 	p := e.start()
@@ -802,8 +800,8 @@ func TestConvergesAfterAnAbruptKill(t *testing.T) {
 	}
 }
 
-// Restarting cleanly must not duplicate or lose anything, and the replayed batch
-// must be recognised as already applied rather than written again.
+// Restarting cleanly must not duplicate or lose anything, and the replayed batch must be
+// recognised as already applied rather than written again.
 func TestRestartIsIdempotent(t *testing.T) {
 	e := setup(t)
 	p := e.start()
@@ -835,8 +833,8 @@ func TestRestartIsIdempotent(t *testing.T) {
 	}
 }
 
-// Rows written before the stream existed produce no binlog events, so only a table
-// scan can deliver them. This is the whole reason the snapshot phase exists.
+// Rows written before the stream existed produce no binlog events, so only a table scan can
+// deliver them.
 func TestPreexistingRowsAreBackfilled(t *testing.T) {
 	e := setup(t)
 	const firstID = 23000
@@ -854,8 +852,8 @@ func TestPreexistingRowsAreBackfilled(t *testing.T) {
 	})
 }
 
-// A scan interrupted partway must resume rather than restart, and must still deliver
-// every row.
+// A scan interrupted partway must resume rather than restart, and must still deliver every
+// row.
 func TestInterruptedBackfillResumes(t *testing.T) {
 	e := setup(t)
 	const firstID = 23500
@@ -879,8 +877,8 @@ func TestInterruptedBackfillResumes(t *testing.T) {
 	})
 }
 
-// A change made while the scan is running must win over the scanned copy of the same
-// row, which is what makes scanning without a table lock safe.
+// A change made while the scan is running must win over the scanned copy of the same row,
+// which is what makes scanning without a table lock safe.
 func TestConcurrentChangeWinsOverTheScannedRow(t *testing.T) {
 	e := setup(t)
 	const firstID = 24500
@@ -922,14 +920,8 @@ func TestStatusReportsProgress(t *testing.T) {
 	}
 }
 
-// A document the index refuses permanently must be recorded and must not stop the
-// stream, or one bad row would block every later change.
-// A document the index refuses permanently must be recorded and must not stop the
-// stream, or one bad row would block every later change.
-//
-// The refusal has to be specific to one row rather than to a field, so the index
-// declares user_id as a byte: 7 fits, 99999 does not. A value MySQL itself would
-// reject teaches nothing, because changeflow would never see it.
+// A document the index refuses permanently must be recorded and must not stop the stream, or
+// one bad row would block every later change.
 func TestRefusedDocumentGoesToTheDeadLetterQueueAndStreamContinues(t *testing.T) {
 	e := setup(t)
 	e.requireElasticsearch()
@@ -1177,8 +1169,7 @@ func (e *env) resnapshot() {
 	}
 }
 
-// A mapping change is applied by filling a new index and moving readers to it. Readers
-// must see a complete table throughout: never a partly built one, and never nothing.
+// A mapping change is applied by filling a new index and moving readers to it.
 func TestRebuildFillsANewIndexAndMovesReaders(t *testing.T) {
 	e := setup(t)
 	const firstID = 27000
@@ -1222,9 +1213,7 @@ func TestRebuildFillsANewIndexAndMovesReaders(t *testing.T) {
 	})
 }
 
-// A scan turns off refreshing and replication to fill an index quickly. Leaving either off
-// would be worse than the time it saved: an index that never refreshes answers searches
-// with nothing, and one with no replicas has no redundancy.
+// A scan turns off refreshing and replication to fill an index quickly.
 func TestASnapshotRestoresTheSettingsItRelaxed(t *testing.T) {
 	e := setup(t)
 	const firstID = 28000
@@ -1261,9 +1250,7 @@ func TestASnapshotRestoresTheSettingsItRelaxed(t *testing.T) {
 	}
 }
 
-// A rebuild that is interrupted must leave readers exactly where they were. Moving them to
-// a half-filled index would show a partial table, and there would be nothing to move back
-// to that is any better.
+// A rebuild that is interrupted must leave readers exactly where they were.
 func TestAnInterruptedRebuildLeavesReadersOnTheOldIndex(t *testing.T) {
 	e := setup(t)
 	const firstID = 29000

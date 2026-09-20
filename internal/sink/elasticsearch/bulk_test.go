@@ -150,8 +150,8 @@ func TestWriteSendsBulkWithExternalVersioning(t *testing.T) {
 	}
 }
 
-// The body must be newline-delimited JSON with a trailing newline, or
-// Elasticsearch rejects the request outright.
+// The body must be newline-delimited JSON with a trailing newline, or Elasticsearch rejects
+// the request outright.
 func TestBulkBodyIsNDJSON(t *testing.T) {
 	rec := &recorder{}
 	s := newTestSink(t, rec, nil)
@@ -173,8 +173,8 @@ func TestBulkBodyIsNDJSON(t *testing.T) {
 	}
 }
 
-// A delete is a versioned action too, so a replayed older update cannot resurrect
-// the document.
+// A delete is a versioned action too, so a replayed older update cannot resurrect the
+// document.
 func TestDeleteIsVersioned(t *testing.T) {
 	rec := &recorder{}
 	s := newTestSink(t, rec, nil)
@@ -193,8 +193,7 @@ func TestDeleteIsVersioned(t *testing.T) {
 	}
 }
 
-// A 409 means the index already holds an equal or newer version. That is the
-// expected outcome of replaying a batch, so it is counted, not failed.
+// A 409 means the index already holds an equal or newer version.
 func TestVersionConflictIsCountedAsStale(t *testing.T) {
 	rec := &recorder{respond: func(int, string) (int, string) {
 		return 200, `{"took":1,"errors":true,"items":[
@@ -218,8 +217,8 @@ func TestVersionConflictIsCountedAsStale(t *testing.T) {
 	}
 }
 
-// A mapping conflict will fail identically forever, so it is reported per document
-// for the dead letter queue rather than retried.
+// A mapping conflict will fail identically forever, so it is reported per document for the
+// dead letter queue rather than retried.
 func TestMappingFailureIsRejectedNotRetried(t *testing.T) {
 	rec := &recorder{respond: func(int, string) (int, string) {
 		return 200, `{"took":1,"errors":true,"items":[
@@ -249,8 +248,8 @@ func TestMappingFailureIsRejectedNotRetried(t *testing.T) {
 	}
 }
 
-// A 429 is back pressure: the cluster is asking us to slow down, and the documents
-// are still unwritten.
+// A 429 is back pressure: the cluster is asking us to slow down, and the documents are still
+// unwritten.
 func TestRejectedExecutionIsRetried(t *testing.T) {
 	rec := &recorder{respond: func(attempt int, body string) (int, string) {
 		if attempt == 1 {
@@ -271,8 +270,8 @@ func TestRejectedExecutionIsRetried(t *testing.T) {
 	}
 }
 
-// Per-item 429s mean those documents were not written, so they are retried rather
-// than counted as applied.
+// Per-item 429s mean those documents were not written, so they are retried rather than counted
+// as applied.
 func TestPerItemRejectionIsRetried(t *testing.T) {
 	rec := &recorder{respond: func(attempt int, body string) (int, string) {
 		if attempt == 1 {
@@ -314,8 +313,7 @@ func TestServerErrorIsRetriedThenFails(t *testing.T) {
 	}
 }
 
-// A 400 on the whole request means the request itself is malformed, which retrying
-// cannot fix.
+// A 400 on the whole request means the request itself is malformed, which retrying cannot fix.
 func TestRequestLevelBadRequestIsNotRetried(t *testing.T) {
 	rec := &recorder{respond: func(int, string) (int, string) {
 		return 400, `{"error":{"type":"illegal_argument_exception"}}`
@@ -357,8 +355,8 @@ func TestWriteOfEmptyBatchDoesNothing(t *testing.T) {
 	}
 }
 
-// Every document has to be accounted for, or a silent drop would look like success
-// and the checkpoint would advance past data that was never written.
+// Every document has to be accounted for, or a silent drop would look like success and the
+// checkpoint would advance past data that was never written.
 func TestResultAccountsForEveryDocument(t *testing.T) {
 	rec := &recorder{respond: func(int, string) (int, string) {
 		return 200, `{"took":1,"errors":true,"items":[
@@ -378,8 +376,8 @@ func TestResultAccountsForEveryDocument(t *testing.T) {
 	}
 }
 
-// A response with fewer items than the batch cannot be interpreted, and assuming
-// success would advance the checkpoint past unwritten documents.
+// A response with fewer items than the batch cannot be interpreted, and assuming success would
+// advance the checkpoint past unwritten documents.
 func TestTruncatedResponseIsAnError(t *testing.T) {
 	rec := &recorder{respond: func(int, string) (int, string) {
 		return 200, `{"took":1,"errors":false,"items":[{"index":{"status":201}}]}`
@@ -426,8 +424,8 @@ func TestNewRejectsIncompleteOptions(t *testing.T) {
 	}
 }
 
-// Writes go to a concrete index while readers use an alias, which is what makes a
-// rebuild a single atomic alias move.
+// Writes go to a concrete index while readers use an alias, which is what makes a rebuild a
+// single atomic alias move.
 func TestWritesTargetTheConcreteIndexNotTheAlias(t *testing.T) {
 	rec := &recorder{}
 	s := newTestSink(t, rec, func(o *Options) {
@@ -446,8 +444,8 @@ func TestWritesTargetTheConcreteIndexNotTheAlias(t *testing.T) {
 	}
 }
 
-// Compression is worth enabling in production, where bulk bodies are large and
-// mostly text, so the path must be exercised rather than assumed.
+// Compression is worth enabling in production, where bulk bodies are large and mostly text, so
+// the path must be exercised rather than assumed.
 func TestCompressedBodyIsSentAndUnderstood(t *testing.T) {
 	rec := &recorder{}
 	s := newTestSink(t, rec, func(o *Options) { o.Compress = true })

@@ -30,8 +30,8 @@ func TestRouterDeliversToTheStreamsWatchingATable(t *testing.T) {
 	}
 }
 
-// Two streams over one table each need their own copy: they have separate mappings,
-// batching, and positions.
+// Two streams over one table each need their own copy: they have separate mappings, batching,
+// and positions.
 func TestRouterFansOutToEveryStreamOnATable(t *testing.T) {
 	router := NewRouter()
 	first := make(chan cdc.ChangeEvent, 4)
@@ -70,8 +70,7 @@ func TestRouterMatchingIgnoresCase(t *testing.T) {
 	}
 }
 
-// A full queue must block rather than drop, since dropping an event would lose data
-// silently. Cancellation is what releases it.
+// A full queue must block rather than drop, since dropping an event would lose data silently.
 func TestRouterBlocksOnAFullQueueUntilCancelled(t *testing.T) {
 	router := NewRouter()
 	full := make(chan cdc.ChangeEvent, 1)
@@ -113,8 +112,8 @@ func TestRouterReportsItsTables(t *testing.T) {
 	}
 }
 
-// The shared position must be one no stream has passed, or a stream behind the others
-// would never receive what it still needs.
+// The shared position must be one no stream has passed, or a stream behind the others would
+// never receive what it still needs.
 func TestSharedStartPositionPicksThePositionCommonToAll(t *testing.T) {
 	const source = "ac8fec9f-9576-11f1-810c-16613dc98230"
 	got, err := sharedStartPosition(map[string]string{
@@ -141,8 +140,8 @@ func TestSharedStartPositionWithOneStream(t *testing.T) {
 	}
 }
 
-// Divergent positions cannot be reconciled by choosing between them, and picking one
-// would silently skip changes for the other.
+// Divergent positions cannot be reconciled by choosing between them, and picking one would
+// silently skip changes for the other.
 func TestSharedStartPositionRefusesDivergentStreams(t *testing.T) {
 	_, err := sharedStartPosition(map[string]string{
 		"first":  "aaaaaaaa-0000-0000-0000-000000000001:1-10",

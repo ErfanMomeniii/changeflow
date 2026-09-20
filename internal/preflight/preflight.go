@@ -40,8 +40,7 @@ type Report struct {
 	Checks []Check
 }
 
-// OK reports whether every Required check passed. Advisory failures do not
-// affect it.
+// OK reports whether every Required check passed.
 func (r Report) OK() bool {
 	return len(r.Failures()) == 0
 }
@@ -76,9 +75,7 @@ func (r Report) filter(sev Severity) []Check {
 	return out
 }
 
-// Vars is the set of global variables preflight needs. Values missing from the
-// server are simply absent from the map, which is meaningful: an absent
-// binlog_row_metadata means the server is too old to support it.
+// Vars is the set of global variables preflight needs.
 var Vars = []string{
 	"version",
 	"log_bin",
@@ -93,9 +90,7 @@ var Vars = []string{
 	"binlog_row_value_options",
 }
 
-// Evaluate applies every check to a set of global variables and SHOW GRANTS
-// lines. It performs no I/O, which is what makes the rules testable without a
-// database.
+// Evaluate applies every check to a set of global variables and SHOW GRANTS lines.
 func Evaluate(vars map[string]string, grants []string) Report {
 	get := func(name string) (string, bool) {
 		v, ok := vars[strings.ToLower(name)]
@@ -282,8 +277,7 @@ func grantCheck(priv string, grants []string) Check {
 	}
 }
 
-// Reader reads the facts preflight needs from a live server. Splitting this from
-// Evaluate is what keeps the rules unit-testable without a database.
+// Reader reads the facts preflight needs from a live server.
 type Reader interface {
 	GlobalVars(ctx context.Context, names []string) (map[string]string, error)
 	Grants(ctx context.Context) ([]string, error)
@@ -295,8 +289,6 @@ type DBReader struct {
 }
 
 // GlobalVars returns the requested global variables, lowercased by name.
-// Variables the server does not know are omitted rather than defaulted, which is
-// how an old server's missing settings stay distinguishable from unset ones.
 func (r DBReader) GlobalVars(ctx context.Context, names []string) (map[string]string, error) {
 	want := make(map[string]bool, len(names))
 	for _, n := range names {

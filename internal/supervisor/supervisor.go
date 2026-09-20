@@ -29,9 +29,6 @@ const seqBlockSize = 10_000
 const readinessLagLimit = 5 * time.Minute
 
 // Supervisor runs one or more streams from a single source.
-//
-// Every stream on a source shares one binlog connection. Ten streams would otherwise cost
-// the master ten dump threads and ten copies of the same binlog, carrying the same data.
 type Supervisor struct {
 	cfg      *config.Config
 	streams  []*config.Stream
@@ -83,8 +80,8 @@ func (s *streamState) snapshot() (bool, time.Time, error) {
 	return s.streaming, s.lastEvent, s.lastError
 }
 
-// New prepares a supervisor: it resolves which streams will run and registers everything
-// they report through, so a run only has to connect and start them.
+// New prepares a supervisor: it resolves which streams will run and registers everything they
+// report through, so a run only has to connect and start them.
 func New(cfg *config.Config, streamName, dlqDir string, log *slog.Logger) (*Supervisor, error) {
 	if log == nil {
 		log = slog.Default()
@@ -133,9 +130,6 @@ func selectStreams(cfg *config.Config, streamName string) ([]*config.Stream, err
 }
 
 // Run starts every stream and blocks until the context ends or something fails.
-//
-// The sequence is the contract: report before working, refuse an unusable source, claim and
-// validate every stream, finish any outstanding scan, and only then stream.
 func (s *Supervisor) Run(ctx context.Context) error {
 	stopTelemetry := s.serveTelemetry(ctx)
 	defer stopTelemetry()

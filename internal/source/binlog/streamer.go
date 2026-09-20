@@ -17,10 +17,6 @@ import (
 )
 
 // ErrPositionPurged means the source no longer holds the transactions a stream needs.
-//
-// It is the one failure a restart cannot fix, so it is worth telling apart from a
-// connection problem: the data between the recorded position and the oldest retained
-// transaction exists nowhere any more, and only reading the table again can reconcile it.
 var ErrPositionPurged = errors.New("binlog: the recorded position is no longer in the source's binlog")
 
 const errBinlogReadFailure = 1236
@@ -35,8 +31,7 @@ func explain(err error) error {
 	return err
 }
 
-// Sequencer hands out the versions stamped on events. It is an interface so the
-// reader does not depend on where positions are stored.
+// Sequencer hands out the versions stamped on events.
 type Sequencer interface {
 	Next(ctx context.Context) (uint64, error)
 }
@@ -70,8 +65,7 @@ type Streamer struct {
 	currentTx string
 }
 
-// New validates options and prepares a reader. Nothing connects until Events is
-// called.
+// New validates options and prepares a reader.
 func New(opts Options) (*Streamer, error) {
 	switch {
 	case opts.Host == "":
@@ -111,8 +105,7 @@ func New(opts Options) (*Streamer, error) {
 	return &Streamer{opts: opts, watched: watched, log: log}, nil
 }
 
-// Events starts reading and returns the stream. The channel closes when the
-// context ends or reading fails; Err reports why.
+// Events starts reading and returns the stream.
 func (s *Streamer) Events(ctx context.Context) <-chan cdc.ChangeEvent {
 	out := make(chan cdc.ChangeEvent, s.opts.Buffer)
 	go func() {

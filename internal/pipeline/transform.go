@@ -18,9 +18,7 @@ import (
 	"github.com/ErfanMomeniii/changeflow/internal/schema"
 )
 
-// Dialect selects how values are encoded for a destination. The difference is
-// narrow but real: an exact decimal is a string in Elasticsearch, where there is
-// no decimal type to hold it, and a number in ClickHouse, where there is.
+// Dialect selects how values are encoded for a destination.
 type Dialect uint8
 
 const (
@@ -47,8 +45,8 @@ type field struct {
 	timePrecision          int
 }
 
-// Plan is a compiled mapping: the work of deciding which columns to write, what to
-// call them, and how to encode each one is done once, not per row.
+// Plan is a compiled mapping: the work of deciding which columns to write, what to call them,
+// and how to encode each one is done once, not per row.
 type Plan struct {
 	meta         *schema.TableMeta
 	dialect      Dialect
@@ -60,8 +58,8 @@ type Plan struct {
 	keyFields    []field
 }
 
-// Compile prepares a mapping for one table and destination, rejecting anything
-// unworkable now rather than on the millionth row.
+// Compile prepares a mapping for one table and destination, rejecting anything unworkable now
+// rather than on the millionth row.
 func Compile(meta *schema.TableMeta, mapping config.Mapping, dialect Dialect, sourceZone *time.Location, zeroDate string) (*Plan, error) {
 	if meta == nil {
 		return nil, fmt.Errorf("transform: no table definition")
@@ -162,9 +160,9 @@ func (p *Plan) Fields() []string {
 // KeyNames returns the source columns forming the key.
 func (p *Plan) KeyNames() []string { return p.keyNames }
 
-// Apply turns one event into the writes it implies: one document, except for an update
-// that changes the key, where the old document must also be deleted — nothing later will
-// mention that key again, so it would remain in the destination forever.
+// Apply turns one event into the writes it implies: one document, except for an update that
+// changes the key, where the old document must also be deleted — nothing later will mention
+// that key again, so it would remain in the destination forever.
 func (p *Plan) Apply(ev *cdc.ChangeEvent) ([]cdc.Doc, error) {
 	if ev == nil {
 		return nil, fmt.Errorf("transform: nil event")

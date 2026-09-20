@@ -40,9 +40,7 @@ func TestAllocatorIssuesIncreasingValues(t *testing.T) {
 	}
 }
 
-// The floor is what makes versions survive losing the checkpoint store. Without
-// it a fresh watermark restarts near zero, every write looks stale to the sink,
-// and the sink silently freezes on old data while appearing healthy.
+// The floor is what makes versions survive losing the checkpoint store.
 func TestAllocatorFloorsOnWallClock(t *testing.T) {
 	a := newTestAllocator(t, NewMemoryStore(), 100, testClockMs)
 	got, err := a.Next(context.Background())
@@ -68,8 +66,8 @@ func TestAllocatorPrefersPersistedWatermarkOverLowerClock(t *testing.T) {
 	}
 }
 
-// A restart must never reissue a value, because a reissued version would let an
-// older write win over a newer one in the sink.
+// A restart must never reissue a value, because a reissued version would let an older write
+// win over a newer one in the sink.
 func TestAllocatorNeverReissuesAcrossRestart(t *testing.T) {
 	store := NewMemoryStore()
 	const blockSize = 50
@@ -163,8 +161,8 @@ func TestAllocatorIsSafeForConcurrentUse(t *testing.T) {
 	}
 }
 
-// Elasticsearch external versions are a signed 64-bit field, so the floor must
-// leave room for decades of headroom rather than overflowing into negative.
+// Elasticsearch external versions are a signed 64-bit field, so the floor must leave room for
+// decades of headroom rather than overflowing into negative.
 func TestSeqFloorStaysWellInsideSignedRange(t *testing.T) {
 	far := time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
 	floor := seqFloor(time.UnixMilli(far))
@@ -176,8 +174,8 @@ func TestSeqFloorStaysWellInsideSignedRange(t *testing.T) {
 	}
 }
 
-// Within a millisecond the floor leaves room for many events, so a busy stream
-// cannot outrun the clock and collide with the next millisecond's floor.
+// Within a millisecond the floor leaves room for many events, so a busy stream cannot outrun
+// the clock and collide with the next millisecond's floor.
 func TestSeqFloorLeavesRoomWithinAMillisecond(t *testing.T) {
 	now := time.UnixMilli(testClockMs)
 	gap := seqFloor(now.Add(time.Millisecond)) - seqFloor(now)

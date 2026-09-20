@@ -13,17 +13,11 @@ import (
 )
 
 // DeadLetterQueue records documents a destination refused permanently.
-//
-// Recording has to be durable, because the position advances past these documents:
-// if they were lost here, they would be lost entirely.
 type DeadLetterQueue interface {
 	Record(ctx context.Context, rejections []sink.Rejection) error
 }
 
 // Observer receives what a stream is doing, for metrics.
-//
-// An interface rather than a concrete recorder, so this package depends on no metrics
-// library and a test can assert on the reports themselves.
 type Observer interface {
 	Event(operation cdc.Operation)
 	Lag(seconds float64)
@@ -55,9 +49,6 @@ type RunnerOptions struct {
 }
 
 // Runner drives one stream: transform, batch, write, and only then record the position.
-//
-// That order is the central rule. A position recorded before the sink accepted the
-// documents would lose them on a crash, with nothing left to say anything was missing.
 type Runner struct {
 	stream           string
 	plan             *Plan
@@ -122,9 +113,6 @@ func NewRunner(opts RunnerOptions) (*Runner, error) {
 }
 
 // Run consumes events until the channel closes or the context is cancelled.
-//
-// Reading from a channel rather than owning the source is what lets a snapshot
-// scan and a binlog stream share this code unchanged.
 func (r *Runner) Run(ctx context.Context, events <-chan cdc.ChangeEvent) error {
 	for {
 		var timer *time.Timer

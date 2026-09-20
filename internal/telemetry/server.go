@@ -14,10 +14,6 @@ import (
 )
 
 // Health describes whether a stream is fit to serve.
-//
-// Liveness and readiness are separated deliberately: a stream that is behind is
-// still alive and must not be restarted, since restarting it would only make it
-// further behind.
 type Health struct {
 	Ready func() error
 }
@@ -32,15 +28,12 @@ type Server struct {
 	server   *http.Server
 }
 
-// NewServer prepares the endpoints. Nothing listens until Start is called.
+// NewServer prepares the endpoints.
 func NewServer(addr string, reg *prometheus.Registry, health Health) *Server {
 	return &Server{addr: addr, reg: reg, health: health}
 }
 
 // Start begins listening and serves until the context is cancelled.
-//
-// The listener is opened synchronously so a port already in use fails at startup
-// rather than leaving a process running with no way to observe it.
 func (s *Server) Start(ctx context.Context) error {
 	listener, err := net.Listen("tcp", s.addr)
 	if err != nil {
@@ -88,8 +81,8 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 }
 
-// Addr returns the address actually being listened on, which is how a caller finds
-// the port when the configured one was zero.
+// Addr returns the address actually being listened on, which is how a caller finds the port
+// when the configured one was zero.
 func (s *Server) Addr() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()

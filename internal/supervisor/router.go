@@ -12,10 +12,6 @@ import (
 )
 
 // Router delivers each change to the streams configured for its table.
-//
-// One binlog connection serves every stream on a source, rather than one dump thread and
-// one copy of the binlog per stream. A table watched by two streams receives the event
-// twice, since each has its own mapping, batching, and position.
 type Router struct {
 	byTable   map[string][]chan cdc.ChangeEvent
 	closeOnce sync.Once
@@ -44,10 +40,6 @@ func (r *Router) Tables() []string {
 }
 
 // Route delivers one event to every stream watching its table.
-//
-// Sending blocks when a queue is full, which is how back pressure reaches the reader.
-// With a shared reader that pressure is shared: a slow destination on one stream slows
-// the others, and the queue depth metric is what makes it visible.
 func (r *Router) Route(ctx context.Context, ev cdc.ChangeEvent) error {
 	if ev.Meta == nil {
 		return nil

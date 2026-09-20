@@ -8,10 +8,6 @@ import (
 )
 
 // ByteSize is a size in bytes, written in configuration with a unit suffix.
-//
-// Both binary and decimal units are accepted and treated distinctly: MiB is
-// 1048576 and MB is 1000000. The difference matters when a batch size is being
-// matched against a service's real request limit.
 type ByteSize uint64
 
 var byteUnits = []struct {
@@ -75,8 +71,8 @@ func ParseByteSize(raw string) (ByteSize, error) {
 	return ByteSize(n * factor), nil
 }
 
-// String renders the size using the largest binary unit that divides it exactly,
-// so a value read back from configuration looks the way it was written.
+// String renders the size using the largest binary unit that divides it exactly, so a value
+// read back from configuration looks the way it was written.
 func (b ByteSize) String() string {
 	n := uint64(b)
 	for _, u := range []struct {
@@ -99,9 +95,6 @@ func (b ByteSize) String() string {
 func (b ByteSize) Bytes() uint64 { return uint64(b) }
 
 // Duration is a time span written in configuration as a Go duration string.
-//
-// A bare number is rejected: "5" could mean seconds or milliseconds, and guessing
-// would change behaviour without telling anyone.
 type Duration time.Duration
 
 // UnmarshalYAML parses a duration such as "500ms" or "1m30s".
@@ -118,8 +111,8 @@ func (d *Duration) UnmarshalYAML(unmarshal func(any) error) error {
 	return nil
 }
 
-// ParseDuration converts a duration string into a time.Duration, rejecting
-// negatives and unitless numbers.
+// ParseDuration converts a duration string into a time.Duration, rejecting negatives and
+// unitless numbers.
 func ParseDuration(raw string) (time.Duration, error) {
 	s := strings.TrimSpace(raw)
 	if s == "" {

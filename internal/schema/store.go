@@ -18,8 +18,7 @@ type DBLoader struct {
 	DB *sql.DB
 }
 
-// Load returns a table's definition, or an error naming the table when it does
-// not exist.
+// Load returns a table's definition, or an error naming the table when it does not exist.
 func (l DBLoader) Load(ctx context.Context, schemaName, table string) (*TableMeta, error) {
 	meta := &TableMeta{Schema: schemaName, Table: table}
 	const columnsQuery = `
@@ -130,9 +129,6 @@ func parseMemberList(columnType, keyword string) []string {
 }
 
 // Store caches table definitions and reloads them when DDL invalidates a table.
-//
-// Caching matters because a definition is needed for every row event, and reading
-// information_schema per event would put a query on the source for each change.
 type Store struct {
 	loader Loader
 	mu     sync.RWMutex
@@ -168,16 +164,15 @@ func (s *Store) Table(ctx context.Context, schemaName, table string) (*TableMeta
 	return meta, nil
 }
 
-// Invalidate drops a cached definition, which is what a DDL statement on the
-// table requires.
+// Invalidate drops a cached definition, which is what a DDL statement on the table requires.
 func (s *Store) Invalidate(schemaName, table string) {
 	s.mu.Lock()
 	delete(s.cache, cacheKey(schemaName, table))
 	s.mu.Unlock()
 }
 
-// InvalidateAll drops every cached definition, for a DDL statement whose target
-// cannot be determined.
+// InvalidateAll drops every cached definition, for a DDL statement whose target cannot be
+// determined.
 func (s *Store) InvalidateAll() {
 	s.mu.Lock()
 	s.cache = make(map[string]*TableMeta)

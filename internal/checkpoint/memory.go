@@ -6,12 +6,7 @@ import (
 	"time"
 )
 
-// MemoryStore keeps checkpoints in memory. It exists for tests and for running
-// against a throwaway target, and it counts writes so tests can assert that
-// reservation happens per block rather than per event.
-//
-// It is not a usable production backend: losing the process loses the position,
-// which forces a re-snapshot.
+// MemoryStore keeps checkpoints in memory.
 type MemoryStore struct {
 	mu    sync.Mutex
 	data  map[string]Checkpoint

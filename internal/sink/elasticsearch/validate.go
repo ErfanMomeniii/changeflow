@@ -11,12 +11,6 @@ import (
 )
 
 // ValidateMapping compares the live index against the fields this stream will write.
-//
-// Checked at startup because the alternative is discovering a mismatch at document
-// four hundred thousand, having already written three hundred and ninety nine
-// thousand documents that need a rebuild to correct. A field declared as the wrong
-// type is worse than a missing one: the write succeeds and the value is quietly
-// changed.
 func (s *Sink) ValidateMapping(ctx context.Context, expected map[string]string) error {
 	if len(expected) == 0 {
 		return errors.New("elasticsearch: nothing to validate; the stream writes no fields")

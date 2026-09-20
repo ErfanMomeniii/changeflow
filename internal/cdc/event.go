@@ -33,9 +33,6 @@ func (o Operation) IsUpsert() bool {
 }
 
 // Row holds one row's column values in ordinal order, matching schema.TableMeta.Columns.
-//
-// Positional rather than keyed: a map per row costs an allocation per column plus a hash
-// on every access, and the names are already known on the table definition.
 type Row []any
 
 // ChangeEvent is one observed change to one row.
@@ -52,8 +49,8 @@ type ChangeEvent struct {
 	RowsScanned uint64
 }
 
-// Values returns the row to write from: the new values for an upsert, and the prior
-// values for a delete, which is the only place a deleted row's key still exists.
+// Values returns the row to write from: the new values for an upsert, and the prior values for
+// a delete, which is the only place a deleted row's key still exists.
 func (e *ChangeEvent) Values() Row {
 	if e.Operation == OperationDelete {
 		return e.Before

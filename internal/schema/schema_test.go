@@ -52,8 +52,8 @@ func TestPrimaryKeyPositions(t *testing.T) {
 	}
 }
 
-// A table with no primary key cannot be replicated idempotently, and the message
-// has to say so rather than failing later on a duplicate.
+// A table with no primary key cannot be replicated idempotently, and the message has to say so
+// rather than failing later on a duplicate.
 func TestPrimaryKeyPositionsExplainsMissingKey(t *testing.T) {
 	m := &TableMeta{Schema: "shop", Table: "audit_log", Columns: []Column{{Name: "actor"}}}
 	_, err := m.PrimaryKeyPositions()
@@ -118,8 +118,8 @@ func TestResolveKeyAcceptsCompositeKey(t *testing.T) {
 	}
 }
 
-// Generated columns are dropped by default, since a row image never carries them
-// and including one would write a null over real data.
+// Generated columns are dropped by default, since a row image never carries them and including
+// one would write a null over real data.
 func TestSelectColumnsSkipsGeneratedByDefault(t *testing.T) {
 	got, err := ordersMeta().SelectColumns(nil, nil, []string{"id"})
 	if err != nil {
@@ -145,8 +145,8 @@ func TestSelectColumnsHonoursInclude(t *testing.T) {
 	}
 }
 
-// Selected columns stay in ordinal order regardless of how the include list is
-// written, because a row image is positional.
+// Selected columns stay in ordinal order regardless of how the include list is written,
+// because a row image is positional.
 func TestSelectColumnsKeepsOrdinalOrder(t *testing.T) {
 	got, err := ordersMeta().SelectColumns([]string{"status", "id", "user_id"}, nil, []string{"id"})
 	if err != nil {
@@ -170,8 +170,8 @@ func TestSelectColumnsHonoursExclude(t *testing.T) {
 	}
 }
 
-// A destination row cannot be identified without its key, so dropping a key
-// column is a configuration error rather than a preference.
+// A destination row cannot be identified without its key, so dropping a key column is a
+// configuration error rather than a preference.
 func TestSelectColumnsRefusesToDropKeyColumns(t *testing.T) {
 	m := ordersMeta()
 	if _, err := m.SelectColumns([]string{"status", "note"}, nil, []string{"id"}); err == nil {
@@ -241,8 +241,8 @@ func (f *fakeLoader) Load(context.Context, string, string) (*TableMeta, error) {
 	return f.meta, nil
 }
 
-// A definition is needed for every row event, so loading it per event would put a
-// query on the source for every change.
+// A definition is needed for every row event, so loading it per event would put a query on the
+// source for every change.
 func TestStoreCachesDefinitions(t *testing.T) {
 	loader := &fakeLoader{meta: ordersMeta()}
 	store := NewStore(loader)
@@ -270,8 +270,8 @@ func TestStoreLookupIgnoresCase(t *testing.T) {
 	}
 }
 
-// DDL changes a table's shape, so a stale definition would decode later rows
-// against the wrong columns.
+// DDL changes a table's shape, so a stale definition would decode later rows against the wrong
+// columns.
 func TestStoreInvalidateForcesReload(t *testing.T) {
 	loader := &fakeLoader{meta: ordersMeta()}
 	store := NewStore(loader)
@@ -302,8 +302,7 @@ func TestStoreInvalidateAllClearsCache(t *testing.T) {
 	}
 }
 
-// A failed load must not be cached, or a transient error would persist until
-// restart.
+// A failed load must not be cached, or a transient error would persist until restart.
 func TestStoreDoesNotCacheFailures(t *testing.T) {
 	loader := &fakeLoader{err: errors.New("connection reset")}
 	store := NewStore(loader)

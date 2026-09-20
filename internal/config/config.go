@@ -14,7 +14,6 @@ import (
 )
 
 // MaxStreamNameLen bounds a stream name so it fits the checkpoint table's column.
-// Exceeding it would produce a stream that runs but can never checkpoint.
 const MaxStreamNameLen = 48
 
 // Sink types changeflow can write to.
@@ -115,8 +114,8 @@ var (
 	envRefPattern     = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(:-([^}]*))?\}`)
 )
 
-// Load reads and validates a configuration file, expanding environment
-// references from the process environment.
+// Load reads and validates a configuration file, expanding environment references from the
+// process environment.
 func Load(path string) (*Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -126,7 +125,6 @@ func Load(path string) (*Config, error) {
 }
 
 // Parse expands environment references, decodes, applies defaults, and validates.
-// The lookup function is a parameter so tests need no process environment.
 func Parse(raw []byte, lookup func(string) (string, bool)) (*Config, error) {
 	expanded, err := expandEnv(raw, lookup)
 	if err != nil {
@@ -376,8 +374,8 @@ func (s *Stream) TableName() string {
 	return table
 }
 
-// StreamNames returns every configured stream name in sorted order, so logs,
-// status output, and startup order do not vary between runs.
+// StreamNames returns every configured stream name in sorted order, so logs, status output,
+// and startup order do not vary between runs.
 func (c *Config) StreamNames() []string {
 	names := make([]string, 0, len(c.Streams))
 	for name := range c.Streams {
@@ -400,8 +398,8 @@ func (c *Config) Stream(name string) (*Stream, error) {
 	return nil, fmt.Errorf("no stream named %q; configured streams are: %s", name, strings.Join(c.StreamNames(), ", "))
 }
 
-// EstimatedMemory bounds steady-state memory: each pipeline's queue holds rows,
-// and each sink worker can hold a full batch in flight.
+// EstimatedMemory bounds steady-state memory: each pipeline's queue holds rows, and each sink
+// worker can hold a full batch in flight.
 func (c *Config) EstimatedMemory() uint64 {
 	var total uint64
 	for _, s := range c.Streams {
@@ -411,9 +409,8 @@ func (c *Config) EstimatedMemory() uint64 {
 	return total
 }
 
-// CheckMemoryLimit refuses a configuration whose bound exceeds the process memory
-// limit, turning a scheduled out-of-memory kill into a startup error. A limit of
-// math.MaxInt64 means none is set.
+// CheckMemoryLimit refuses a configuration whose bound exceeds the process memory limit,
+// turning a scheduled out-of-memory kill into a startup error.
 func (c *Config) CheckMemoryLimit(limit int64) error {
 	if limit <= 0 || limit == 1<<63-1 {
 		return nil

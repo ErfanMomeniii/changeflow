@@ -7,20 +7,15 @@ import (
 	"github.com/ErfanMomeniii/changeflow/internal/cdc"
 )
 
-// Limits decide when a batch is sent. All three are required: without a size limit a
-// batch grows until the destination refuses it, and without an interval a quiet table's
-// changes wait indefinitely.
+// Limits decide when a batch is sent.
 type Limits struct {
 	MaxRows       int
 	MaxBytes      uint64
 	FlushInterval time.Duration
 }
 
-// Batcher groups documents so a destination is written in useful sizes rather than once
-// per row.
-//
-// Arrival order is kept, which is what preserves the sequence of writes to a single key.
-// Not safe for concurrent use: each pipeline owns one, driven by one goroutine.
+// Batcher groups documents so a destination is written in useful sizes rather than once per
+// row.
 type Batcher struct {
 	limits    Limits
 	now       func() time.Time
@@ -46,8 +41,6 @@ func NewBatcher(limits Limits, now func() time.Time) (*Batcher, error) {
 }
 
 // Add takes one document, returning a batch when the document completes it.
-//
-// A returned batch belongs to the caller; the next one fills a fresh slice.
 func (b *Batcher) Add(d cdc.Doc) []cdc.Doc {
 	size := uint64(d.Size())
 	if size >= b.limits.MaxBytes && len(b.pending) > 0 {
@@ -83,8 +76,8 @@ func (b *Batcher) DueForFlush() bool {
 	return !b.now().Before(b.startedAt.Add(b.limits.FlushInterval))
 }
 
-// NextDeadline returns when the pending batch becomes due, so a caller can wait rather
-// than poll, and false when nothing is pending.
+// NextDeadline returns when the pending batch becomes due, so a caller can wait rather than
+// poll, and false when nothing is pending.
 func (b *Batcher) NextDeadline() (time.Time, bool) {
 	if len(b.pending) == 0 {
 		return time.Time{}, false
@@ -92,8 +85,8 @@ func (b *Batcher) NextDeadline() (time.Time, bool) {
 	return b.startedAt.Add(b.limits.FlushInterval), true
 }
 
-// Flush hands over the pending documents and starts a new batch, returning nil when
-// nothing is pending so a caller can flush unconditionally.
+// Flush hands over the pending documents and starts a new batch, returning nil when nothing is
+// pending so a caller can flush unconditionally.
 func (b *Batcher) Flush() []cdc.Doc {
 	if len(b.pending) == 0 {
 		return nil

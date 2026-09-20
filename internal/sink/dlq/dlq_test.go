@@ -77,8 +77,8 @@ func TestRecordWritesOneLinePerRejection(t *testing.T) {
 	}
 }
 
-// A record has to carry enough to understand and replay the failure without the
-// original event.
+// A record has to carry enough to understand and replay the failure without the original
+// event.
 func TestRecordCarriesEnoughToDiagnoseAndReplay(t *testing.T) {
 	w, dir := newTestWriter(t, nil)
 	if err := w.Record(t.Context(), []sink.Rejection{rejection("42", "failed to parse field [total]")}); err != nil {
@@ -108,9 +108,8 @@ func TestRecordCarriesEnoughToDiagnoseAndReplay(t *testing.T) {
 	}
 }
 
-// Row values can hold personal data, so the payload is withheld unless an operator
-// asks for it. A dead letter file is far more likely to be copied around than a
-// database is.
+// Row values can hold personal data, so the payload is withheld unless an operator asks for
+// it.
 func TestPayloadIsWithheldByDefault(t *testing.T) {
 	w, dir := newTestWriter(t, nil)
 	if err := w.Record(t.Context(), []sink.Rejection{rejection("42", "bad")}); err != nil {
@@ -155,9 +154,8 @@ func TestRecordAppendsAcrossCalls(t *testing.T) {
 	}
 }
 
-// The pipeline advances its position once a rejection is recorded, so the record
-// must survive a crash that happens immediately afterwards. Reading the file
-// without closing the writer shows the data has left our buffers.
+// The pipeline advances its position once a rejection is recorded, so the record must survive
+// a crash that happens immediately afterwards.
 func TestRecordIsDurableBeforeReturning(t *testing.T) {
 	w, dir := newTestWriter(t, nil)
 	if err := w.Record(t.Context(), []sink.Rejection{rejection("42", "bad")}); err != nil {
@@ -193,8 +191,8 @@ func TestWriterCreatesMissingDirectory(t *testing.T) {
 	}
 }
 
-// Without rotation a long-running stream with a persistent mapping problem would
-// fill its volume.
+// Without rotation a long-running stream with a persistent mapping problem would fill its
+// volume.
 func TestFileRotatesWhenItGrowsPastTheLimit(t *testing.T) {
 	w, dir := newTestWriter(t, func(o *Options) { o.MaxBytes = 400 })
 	for i := 0; i < 20; i++ {
@@ -297,8 +295,8 @@ func TestNewRejectsIncompleteOptions(t *testing.T) {
 	}
 }
 
-// Any count above zero means documents that are not in the destination, so it has to
-// include the files rotation moved aside.
+// Any count above zero means documents that are not in the destination, so it has to include
+// the files rotation moved aside.
 func TestCountIncludesRotatedFiles(t *testing.T) {
 	stamp := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
 	w, dir := newTestWriter(t, func(o *Options) {
@@ -352,8 +350,8 @@ func TestCountIsPerStream(t *testing.T) {
 	}
 }
 
-// The usual case, and the one worth being sure about: nothing refused, no directory yet,
-// and no error to explain away.
+// The usual case, and the one worth being sure about: nothing refused, no directory yet, and
+// no error to explain away.
 func TestCountIsZeroWhenNothingWasRefused(t *testing.T) {
 	count, err := Count(filepath.Join(t.TempDir(), "never-created"), "orders_to_es")
 	if err != nil {

@@ -67,8 +67,8 @@ func TestGeneratedMappingIsValidJSON(t *testing.T) {
 	}
 }
 
-// The mapping is generated from the same type map replication uses, so the awkward
-// cases cannot drift apart.
+// The mapping is generated from the same type map replication uses, so the awkward cases
+// cannot drift apart.
 func TestGeneratedMappingUsesTheTypeMap(t *testing.T) {
 	got := generateES(t, nil, nil, nil)
 	for _, tc := range []struct {
@@ -98,8 +98,8 @@ func TestGeneratedMappingUsesTheTypeMap(t *testing.T) {
 	}
 }
 
-// An unmapped field must fail loudly rather than being indexed with a guessed type,
-// which is how a column added to the source ends up as the wrong type forever.
+// An unmapped field must fail loudly rather than being indexed with a guessed type, which is
+// how a column added to the source ends up as the wrong type forever.
 func TestGeneratedMappingDisablesDynamicFields(t *testing.T) {
 	got := generateES(t, nil, nil, nil)
 	var doc struct {
@@ -115,8 +115,8 @@ func TestGeneratedMappingDisablesDynamicFields(t *testing.T) {
 	}
 }
 
-// A JSON column's shape is the application's business, and indexing it invites a
-// mapping explosion.
+// A JSON column's shape is the application's business, and indexing it invites a mapping
+// explosion.
 func TestJSONColumnIsStoredButNotIndexed(t *testing.T) {
 	got := generateES(t, nil, nil, nil)
 	p := property(t, got.Body, "metadata")
@@ -145,8 +145,8 @@ func TestGeneratedMappingHonoursIncludeExcludeAndRename(t *testing.T) {
 	}
 }
 
-// A generated column never appears in a binlog row image, so replication never sends
-// it and the mapping must not claim it exists.
+// A generated column never appears in a binlog row image, so replication never sends it and
+// the mapping must not claim it exists.
 func TestGeneratedColumnIsNotInTheMapping(t *testing.T) {
 	got := generateES(t, nil, nil, nil)
 	if property(t, got.Body, "total_with_tax") != nil {
@@ -225,8 +225,8 @@ func TestGeneratedClickHouseTypes(t *testing.T) {
 	}
 }
 
-// Documents carry destination names, so the sort key must use them too or the engine
-// would order on a column that does not exist.
+// Documents carry destination names, so the sort key must use them too or the engine would
+// order on a column that does not exist.
 func TestGeneratedClickHouseSortKeyUsesDestinationNames(t *testing.T) {
 	got, err := GenerateClickHouse(generatorMeta(), []string{"id", "status"}, nil, []string{"id"},
 		map[string]string{"id": "order_id"}, "analytics.orders")
@@ -238,8 +238,8 @@ func TestGeneratedClickHouseSortKeyUsesDestinationNames(t *testing.T) {
 	}
 }
 
-// The reserved columns cannot be shadowed by a mapped field, or the engine would
-// deduplicate on row data.
+// The reserved columns cannot be shadowed by a mapped field, or the engine would deduplicate
+// on row data.
 func TestRenameOntoAReservedColumnIsRefused(t *testing.T) {
 	_, err := GenerateClickHouse(generatorMeta(), nil, nil, []string{"id"},
 		map[string]string{"total_amount": VersionColumn}, "analytics.orders")
@@ -258,8 +258,7 @@ func TestGeneratedClickHouseRequiresATableName(t *testing.T) {
 	}
 }
 
-// The warnings are the part an operator has to act on, so they must actually be
-// produced.
+// The warnings are the part an operator has to act on, so they must actually be produced.
 func TestGeneratorWarnsAboutWhatNeedsAttention(t *testing.T) {
 	es := generateES(t, nil, nil, nil)
 	joined := strings.Join(es.Warnings, "\n")

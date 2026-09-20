@@ -7,9 +7,6 @@ import (
 )
 
 // Destination column names that carry replication state rather than row data.
-//
-// They are not optional: the ClickHouse engine deduplicates on them, so a table
-// created without them collapses rows by the wrong rule or not at all.
 const (
 	VersionColumn   = "_version"
 	DeletedColumn   = "_is_deleted"
@@ -59,9 +56,6 @@ func resolveFields(meta *TableMeta, include, exclude, key []string, rename map[s
 
 // ExpectedElasticsearchFields returns the field types a stream will write, keyed by
 // destination name.
-//
-// The same resolution the generator uses, so what is validated is what is sent. A
-// separate list of expectations would be one more thing to keep in step.
 func ExpectedElasticsearchFields(meta *TableMeta, include, exclude, key []string, rename map[string]string) (map[string]string, error) {
 	fields, _, err := resolveFields(meta, include, exclude, key, rename)
 	if err != nil {

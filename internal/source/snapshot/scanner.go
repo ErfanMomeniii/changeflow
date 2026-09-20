@@ -44,7 +44,7 @@ type Snapshotter struct {
 	done     bool
 }
 
-// New validates options and prepares a scan. Nothing runs until Events is called.
+// New validates options and prepares a scan.
 func New(opts Options) (*Snapshotter, error) {
 	switch {
 	case opts.DB == nil:
@@ -77,8 +77,7 @@ func New(opts Options) (*Snapshotter, error) {
 	return s, nil
 }
 
-// Events runs the scan and returns its rows. The channel closes when the scan
-// finishes or fails; Err reports why, and Done reports whether it completed.
+// Events runs the scan and returns its rows.
 func (s *Snapshotter) Events(ctx context.Context) <-chan cdc.ChangeEvent {
 	out := make(chan cdc.ChangeEvent, s.opts.ChunkSize)
 	go func() {
@@ -103,8 +102,7 @@ func (s *Snapshotter) Err() error {
 	return s.err
 }
 
-// Done reports whether the scan reached the end of the table. Only then may a
-// stream record its snapshot as complete.
+// Done reports whether the scan reached the end of the table.
 func (s *Snapshotter) Done() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

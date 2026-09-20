@@ -11,9 +11,6 @@ import (
 )
 
 // LoadSettings records the index setting a scan replaced, so it can be put back.
-//
-// A missing value means the index declared none, and restoring it clears the override
-// rather than writing this build's idea of the default.
 type LoadSettings struct {
 	refreshInterval json.RawMessage
 	applied         bool
@@ -22,12 +19,8 @@ type LoadSettings struct {
 // Applied reports whether the settings were changed and therefore need restoring.
 func (l LoadSettings) Applied() bool { return l.applied }
 
-// BeginBulkLoad turns off refreshing for the duration of a scan, since every refresh
-// builds segments over data that is about to grow.
-//
-// The replica count is left alone: after a kill there is no telling an index that declares
-// no replicas from one that had them taken away. Only safe on an index no reader is using,
-// which the caller decides — one that never refreshes answers searches with nothing.
+// BeginBulkLoad turns off refreshing for the duration of a scan, since every refresh builds
+// segments over data that is about to grow.
 func (s *Sink) BeginBulkLoad(ctx context.Context) (LoadSettings, error) {
 	var previous LoadSettings
 	status, payload, err := s.do(ctx, http.MethodGet, "/"+s.opts.Index+"/_settings", nil)
@@ -63,9 +56,6 @@ func (s *Sink) BeginBulkLoad(ctx context.Context) (LoadSettings, error) {
 }
 
 // EndBulkLoad puts back what BeginBulkLoad changed and makes the scanned rows visible.
-//
-// Settings first, then a refresh, so a caller moving readers here afterwards never finds
-// the index looking empty.
 func (s *Sink) EndBulkLoad(ctx context.Context, previous LoadSettings) error {
 	if !previous.applied {
 		return nil
@@ -84,11 +74,8 @@ func (s *Sink) EndBulkLoad(ctx context.Context, previous LoadSettings) error {
 	return nil
 }
 
-// ForceMerge collapses the many small segments a scan leaves behind, since search cost
-// scales with their number.
-//
-// Slow on a large index, so when to spend that is the caller's decision, and a failure
-// leaves an index that is slower to search rather than wrong.
+// ForceMerge collapses the many small segments a scan leaves behind, since search cost scales
+// with their number.
 func (s *Sink) ForceMerge(ctx context.Context) error {
 	status, payload, err := s.do(ctx, http.MethodPost, "/"+s.opts.Index+"/_forcemerge?max_num_segments=1", nil)
 	if err != nil {

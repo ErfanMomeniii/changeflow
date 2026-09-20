@@ -5,8 +5,8 @@ import (
 	"strings"
 )
 
-// Kind is how changeflow represents a column's value internally, independent of
-// any particular destination.
+// Kind is how changeflow represents a column's value internally, independent of any particular
+// destination.
 type Kind uint8
 
 const (
@@ -15,8 +15,7 @@ const (
 	KindInt
 	KindUint
 	KindFloat
-	// KindDecimal is carried as text so the value stays exact. A float would
-	// round it, and money does not tolerate that.
+	// KindDecimal is carried as text so the value stays exact.
 	KindDecimal
 	KindString
 	KindBytes
@@ -56,10 +55,6 @@ type Mapped struct {
 }
 
 // Map converts a MySQL column into its destination types.
-//
-// Every decision here is one that silently corrupts data when made carelessly:
-// an unsigned 64-bit integer wrapping negative, a decimal rounded through a
-// float, or a wall-clock DATETIME being treated as an instant.
 func Map(c Column) (Mapped, error) {
 	if c.Generated {
 		return Mapped{}, fmt.Errorf("column %s is generated, so it is absent from binlog row images and would always replicate as null", c.Name)

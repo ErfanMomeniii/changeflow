@@ -12,10 +12,6 @@ import (
 )
 
 // Schema is the checkpoint table definition.
-//
-// Columns are added over time but never repurposed, because other tools read this
-// table directly to report progress. schema_version lets such a reader refuse to
-// interpret a row written by a newer changeflow rather than guess.
 const Schema = `
 CREATE TABLE IF NOT EXISTS %s (
     stream              VARCHAR(64)      NOT NULL PRIMARY KEY,
@@ -35,18 +31,14 @@ CREATE TABLE IF NOT EXISTS %s (
 
 const maxStreamNameLen = 48
 
-// MySQLStore keeps checkpoints in a MySQL table. Putting them in a replicated,
-// backed-up database rather than on local disk is what makes a changeflow process
-// stateless and freely rescheduled.
+// MySQLStore keeps checkpoints in a MySQL table.
 type MySQLStore struct {
 	db          *sql.DB
 	table       string
 	LockTimeout time.Duration
 }
 
-// NewMySQLStore returns a store writing to the named table. The table name is
-// validated rather than escaped because it is interpolated into DDL and DML:
-// identifiers cannot be bound as parameters.
+// NewMySQLStore returns a store writing to the named table.
 func NewMySQLStore(db *sql.DB, table string) (*MySQLStore, error) {
 	if db == nil {
 		return nil, errors.New("checkpoint: mysql store needs a database")
@@ -76,10 +68,6 @@ func validateIdentifier(name string) error {
 }
 
 // EnsureSchema creates the checkpoint table if it does not exist.
-//
-// The existence check is not an optimisation: MySQL refuses CREATE TABLE IF NOT EXISTS
-// without the CREATE privilege even when the table is there, so looking first is what lets
-// a service run on the DML rights it should be limited to.
 func (s *MySQLStore) EnsureSchema(ctx context.Context) error {
 	if s.schemaExists(ctx) {
 		return nil
@@ -96,9 +84,7 @@ func (s *MySQLStore) schemaExists(ctx context.Context) bool {
 	return errors.Is(err, sql.ErrNoRows)
 }
 
-// ErrNotInitialized reports that the checkpoint table does not exist. It is
-// distinct from a missing row, because reporting status before anything has ever
-// run is a normal thing to want, while a vanished table is not.
+// ErrNotInitialized reports that the checkpoint table does not exist.
 var ErrNotInitialized = errors.New("checkpoint table does not exist")
 
 const missingTableCode = 1146
@@ -180,8 +166,7 @@ func parseTimestampText(s string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("cannot parse %q as a timestamp", s)
 }
 
-// Save writes the checkpoint, inserting it when absent. The upsert is a single
-// statement so a concurrent reader never sees a half-written position.
+// Save writes the checkpoint, inserting it when absent.
 func (s *MySQLStore) Save(ctx context.Context, cp Checkpoint) error {
 	if err := validateStream(cp.Stream); err != nil {
 		return err
@@ -221,10 +206,6 @@ func (s *MySQLStore) Save(ctx context.Context, cp Checkpoint) error {
 const maxRecordedErrorLen = 1000
 
 // RecordError stores why a stream stopped, or clears it when given an empty reason.
-//
-// One column, never a position: a whole-row save would carry a position read before the
-// failure and could move a checkpoint backwards. A stream with no row yet has nothing to
-// report, which is not an error.
 func (s *MySQLStore) RecordError(ctx context.Context, stream, reason string) error {
 	if err := validateStream(stream); err != nil {
 		return err
@@ -282,8 +263,7 @@ func validateStream(stream string) error {
 	return nil
 }
 
-// StreamLock is exclusive ownership of one stream, held for as long as its
-// connection lives.
+// StreamLock is exclusive ownership of one stream, held for as long as its connection lives.
 type StreamLock struct {
 	conn   *sql.Conn
 	name   string
@@ -293,11 +273,7 @@ type StreamLock struct {
 // ErrStreamLocked reports that another session owns the stream.
 var ErrStreamLocked = errors.New("stream is already being processed elsewhere")
 
-// Lock claims exclusive ownership of a stream. Two processes replicating one stream
-// double-write and contend for a single server_id, with errors that name neither culprit.
-//
-// On its own pinned connection, because MySQL advisory locks are session-scoped: taken
-// from the pool, the lock would be released the moment the connection went back.
+// Lock claims exclusive ownership of a stream.
 func (s *MySQLStore) Lock(ctx context.Context, stream string) (*StreamLock, error) {
 	if err := validateStream(stream); err != nil {
 		return nil, err
@@ -342,8 +318,8 @@ func (l *StreamLock) Release(ctx context.Context) error {
 	return closeErr
 }
 
-// Held reports whether this lock is still held, which distinguishes a released
-// lock from one whose connection died.
+// Held reports whether this lock is still held, which distinguishes a released lock from one
+// whose connection died.
 func (l *StreamLock) Held(ctx context.Context) bool {
 	if l == nil || l.conn == nil {
 		return false
@@ -355,8 +331,8 @@ func (l *StreamLock) Held(ctx context.Context) bool {
 	return mine.Valid
 }
 
-// Ping verifies the store is reachable, so a misconfigured checkpoint database
-// fails at startup rather than at the first batch acknowledgement.
+// Ping verifies the store is reachable, so a misconfigured checkpoint database fails at
+// startup rather than at the first batch acknowledgement.
 func (s *MySQLStore) Ping(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

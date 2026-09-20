@@ -117,11 +117,6 @@ func BenchmarkBatcherAdd(b *testing.B) {
 }
 
 // Allocation counts are the gate, not wall time.
-//
-// Allocations are a property of the code and reproduce anywhere; nanoseconds on a
-// shared CI runner are not comparable to a developer's machine. The time bound here
-// is deliberately loose, to catch something pathological rather than a regression of
-// a few percent.
 func TestTransformStaysWithinItsAllocationBudget(t *testing.T) {
 	if testing.Short() {
 		t.Skip("performance budgets are not measured in short mode")

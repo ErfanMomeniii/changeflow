@@ -179,8 +179,8 @@ func TestRunnerWritesBatchesAndCheckpoints(t *testing.T) {
 	}
 }
 
-// The rule the whole design rests on: a position is durable only once the sink has
-// accepted the documents that reached it. Reversing this loses data on a crash.
+// The rule the whole design rests on: a position is durable only once the sink has accepted
+// the documents that reached it.
 func TestCheckpointIsWrittenOnlyAfterTheSinkAcknowledges(t *testing.T) {
 	h := newRunner(t, nil)
 	var checkpointAtWriteTime string
@@ -201,8 +201,8 @@ func TestCheckpointIsWrittenOnlyAfterTheSinkAcknowledges(t *testing.T) {
 	}
 }
 
-// A failed write must leave the position untouched, so a restart replays the batch
-// rather than skipping it.
+// A failed write must leave the position untouched, so a restart replays the batch rather than
+// skipping it.
 func TestFailedWriteDoesNotAdvanceCheckpoint(t *testing.T) {
 	h := newRunner(t, nil)
 	h.sink.reply = func(int, []cdc.Doc) (sink.Result, error) {
@@ -220,8 +220,8 @@ func TestFailedWriteDoesNotAdvanceCheckpoint(t *testing.T) {
 	}
 }
 
-// Documents the destination refuses permanently would otherwise stall the stream
-// forever, so they are recorded and the batch proceeds.
+// Documents the destination refuses permanently would otherwise stall the stream forever, so
+// they are recorded and the batch proceeds.
 func TestRejectedDocumentsGoToTheDeadLetterQueue(t *testing.T) {
 	h := newRunner(t, nil)
 	h.sink.reply = func(_ int, docs []cdc.Doc) (sink.Result, error) {
@@ -243,8 +243,8 @@ func TestRejectedDocumentsGoToTheDeadLetterQueue(t *testing.T) {
 	}
 }
 
-// If rejected documents could not be recorded, advancing the position would lose
-// them silently, so the run fails instead.
+// If rejected documents could not be recorded, advancing the position would lose them
+// silently, so the run fails instead.
 func TestRunFailsWhenDeadLetterQueueCannotAccept(t *testing.T) {
 	h := newRunner(t, func(o *RunnerOptions) { o.DLQ = failingDLQ{} })
 	h.sink.reply = func(_ int, docs []cdc.Doc) (sink.Result, error) {
@@ -255,8 +255,8 @@ func TestRunFailsWhenDeadLetterQueueCannotAccept(t *testing.T) {
 	}
 }
 
-// A stale document means the destination already holds an equal or newer version,
-// which is a success for convergence.
+// A stale document means the destination already holds an equal or newer version, which is a
+// success for convergence.
 func TestStaleDocumentsStillAdvanceCheckpoint(t *testing.T) {
 	h := newRunner(t, nil)
 	h.sink.reply = func(_ int, docs []cdc.Doc) (sink.Result, error) {
@@ -270,8 +270,8 @@ func TestStaleDocumentsStillAdvanceCheckpoint(t *testing.T) {
 	}
 }
 
-// A response that accounts for fewer documents than were sent cannot be trusted,
-// and advancing past them would lose data.
+// A response that accounts for fewer documents than were sent cannot be trusted, and advancing
+// past them would lose data.
 func TestUnaccountedDocumentsFailTheRun(t *testing.T) {
 	h := newRunner(t, nil)
 	h.sink.reply = func(_ int, docs []cdc.Doc) (sink.Result, error) {
@@ -282,8 +282,8 @@ func TestUnaccountedDocumentsFailTheRun(t *testing.T) {
 	}
 }
 
-// Whatever is pending when the source ends must be written, or the last partial
-// batch would be lost on every clean shutdown.
+// Whatever is pending when the source ends must be written, or the last partial batch would be
+// lost on every clean shutdown.
 func TestPendingBatchIsFlushedWhenTheSourceEnds(t *testing.T) {
 	h := newRunner(t, func(o *RunnerOptions) {
 		o.Limits = Limits{MaxRows: 100, MaxBytes: 1 << 20, FlushInterval: time.Hour}
@@ -299,8 +299,8 @@ func TestPendingBatchIsFlushedWhenTheSourceEnds(t *testing.T) {
 	}
 }
 
-// A key-changing update becomes two documents, and both must reach the sink in
-// order, even though they arrived as one event.
+// A key-changing update becomes two documents, and both must reach the sink in order, even
+// though they arrived as one event.
 func TestKeyChangeProducesBothDocumentsInOrder(t *testing.T) {
 	h := newRunner(t, func(o *RunnerOptions) {
 		o.Limits = Limits{MaxRows: 100, MaxBytes: 1 << 20, FlushInterval: time.Hour}
@@ -331,8 +331,8 @@ func TestKeyChangeProducesBothDocumentsInOrder(t *testing.T) {
 	}
 }
 
-// An event that cannot be transformed at all would otherwise stop the stream, so it
-// is recorded and skipped.
+// An event that cannot be transformed at all would otherwise stop the stream, so it is
+// recorded and skipped.
 func TestUntransformableEventGoesToTheDeadLetterQueue(t *testing.T) {
 	h := newRunner(t, func(o *RunnerOptions) {
 		o.Limits = Limits{MaxRows: 100, MaxBytes: 1 << 20, FlushInterval: time.Hour}
@@ -393,9 +393,8 @@ func TestRunnerStopsOnContextCancellation(t *testing.T) {
 	}
 }
 
-// A scan position must be recorded on the same terms as a GTID: only once the
-// destination has accepted the rows. Recording it on emit would advance past rows
-// that were never written, and a scan never revisits them.
+// A scan position must be recorded on the same terms as a GTID: only once the destination has
+// accepted the rows.
 func TestScanCursorIsRecordedOnlyAfterTheSinkAcknowledges(t *testing.T) {
 	h := newRunner(t, nil)
 	var cursorAtWriteTime []byte
@@ -424,8 +423,8 @@ func TestScanCursorIsRecordedOnlyAfterTheSinkAcknowledges(t *testing.T) {
 	}
 }
 
-// A failed write must leave the scan position where it was, so the chunk is read
-// again rather than skipped.
+// A failed write must leave the scan position where it was, so the chunk is read again rather
+// than skipped.
 func TestFailedWriteDoesNotAdvanceTheScanCursor(t *testing.T) {
 	h := newRunner(t, nil)
 	h.sink.reply = func(int, []cdc.Doc) (sink.Result, error) {
@@ -444,8 +443,8 @@ func TestFailedWriteDoesNotAdvanceTheScanCursor(t *testing.T) {
 	}
 }
 
-// A graceful stop must write what it is holding, so a shutdown does not hand the
-// next start a batch to redo.
+// A graceful stop must write what it is holding, so a shutdown does not hand the next start a
+// batch to redo.
 func TestPendingBatchIsWrittenOnCancellation(t *testing.T) {
 	h := newRunner(t, func(o *RunnerOptions) {
 		o.Limits = Limits{MaxRows: 1000, MaxBytes: 1 << 20, FlushInterval: time.Hour}

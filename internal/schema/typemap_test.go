@@ -64,8 +64,7 @@ func TestMapIntegerTypes(t *testing.T) {
 	}
 }
 
-// A decimal must never travel as a float. Elasticsearch has no exact decimal
-// type, so the value is kept as a keyword and stays byte-identical.
+// A decimal must never travel as a float.
 func TestMapDecimalPreservesExactness(t *testing.T) {
 	got, err := Map(decimalCol(18, 2))
 	if err != nil {
@@ -93,7 +92,6 @@ func TestMapDecimalCarriesPrecisionThrough(t *testing.T) {
 }
 
 // DATETIME is wall-clock with no zone; TIMESTAMP is an instant stored as UTC.
-// Treating them alike shifts every value by the server's offset.
 func TestMapDistinguishesDatetimeFromTimestamp(t *testing.T) {
 	dt := col("placed_at", "datetime", "datetime(3)")
 	dt.DateTimePrecision = 3
@@ -155,9 +153,8 @@ func TestMapEnumAndSet(t *testing.T) {
 	}
 }
 
-// An ENUM with no member list means the server did not supply labels, and the
-// binlog carries only integers. Emitting those as if they were labels would write
-// wrong data.
+// An ENUM with no member list means the server did not supply labels, and the binlog carries
+// only integers.
 func TestMapEnumWithoutLabelsIsRefused(t *testing.T) {
 	if _, err := Map(col("status", "enum", "enum('a','b')")); err == nil {
 		t.Fatal("expected an enum with no member list to be refused")
@@ -201,8 +198,8 @@ func TestMapStringAndTextTypes(t *testing.T) {
 	}
 }
 
-// Spatial types are refused outright rather than being allowed to fail per row at
-// runtime, so the mistake surfaces when the config is checked.
+// Spatial types are refused outright rather than being allowed to fail per row at runtime, so
+// the mistake surfaces when the config is checked.
 func TestMapRefusesSpatialTypes(t *testing.T) {
 	for _, dt := range []string{"geometry", "point", "linestring", "polygon", "multipoint", "geomcollection"} {
 		if _, err := Map(col("g", dt, dt)); err == nil {
@@ -217,8 +214,8 @@ func TestMapRefusesUnknownTypes(t *testing.T) {
 	}
 }
 
-// A nullable column becomes Nullable(T) in ClickHouse, which costs a null mask
-// and blocks some optimisations, so it is applied only where the schema says so.
+// A nullable column becomes Nullable(T) in ClickHouse, which costs a null mask and blocks some
+// optimisations, so it is applied only where the schema says so.
 func TestNullableColumnsWrapClickHouseType(t *testing.T) {
 	got, err := Map(col("note", "varchar", "varchar(64)", nullable))
 	if err != nil {
@@ -236,8 +233,7 @@ func TestNullableColumnsWrapClickHouseType(t *testing.T) {
 	}
 }
 
-// A LowCardinality wrapper must sit outside Nullable, which is the order
-// ClickHouse accepts.
+// A LowCardinality wrapper must sit outside Nullable, which is the order ClickHouse accepts.
 func TestNullableEnumNesting(t *testing.T) {
 	enum := col("status", "enum", "enum('a','b')", nullable)
 	enum.EnumValues = []string{"a", "b"}
@@ -250,8 +246,8 @@ func TestNullableEnumNesting(t *testing.T) {
 	}
 }
 
-// Generated columns are absent from binlog row images, so a stream that maps one
-// would always write a null.
+// Generated columns are absent from binlog row images, so a stream that maps one would always
+// write a null.
 func TestMapRefusesGeneratedColumns(t *testing.T) {
 	if _, err := Map(col("total_with_tax", "decimal", "decimal(18,2)", generated)); err == nil {
 		t.Fatal("expected a generated column to be refused")

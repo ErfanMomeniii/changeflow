@@ -20,9 +20,6 @@ func seqFloor(now time.Time) uint64 {
 
 // Allocator hands out increasing version numbers, reserved in blocks so a durable write
 // happens once per block rather than once per event.
-//
-// Reserved before issued, so a crash skips the rest of a block — harmless — rather than
-// reissuing values already used, which would let an older write win.
 type Allocator struct {
 	store     Store
 	stream    string
@@ -50,8 +47,7 @@ func NewAllocator(ctx context.Context, store Store, stream string, blockSize uin
 	return &Allocator{store: store, stream: stream, blockSize: blockSize, now: now, next: 1, end: 0}, nil
 }
 
-// Next returns the next version number, reserving a fresh block when the current
-// one is spent.
+// Next returns the next version number, reserving a fresh block when the current one is spent.
 func (a *Allocator) Next(ctx context.Context) (uint64, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

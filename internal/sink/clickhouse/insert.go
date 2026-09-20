@@ -89,9 +89,6 @@ func New(opts Options) (*Sink, error) {
 }
 
 // Write inserts a batch.
-//
-// The engine deduplicates by version, so re-inserting a row that is already present is
-// harmless and needs no per-document check.
 func (s *Sink) Write(ctx context.Context, docs []cdc.Doc) (sink.Result, error) {
 	var result sink.Result
 	if len(docs) == 0 {

@@ -71,9 +71,7 @@ func TestEvaluateRejectsMinimalRowImage(t *testing.T) {
 	}
 }
 
-// A 5.7 server does not expose binlog_row_metadata at all. That must fail loudly
-// rather than being treated as "not set", because without it unsigned columns
-// arrive negative and ENUMs arrive as integers.
+// A 5.7 server does not expose binlog_row_metadata at all.
 func TestEvaluateRejectsMissingRowMetadata(t *testing.T) {
 	vars := goodVars()
 	delete(vars, "binlog_row_metadata")
@@ -157,8 +155,8 @@ func TestEvaluateAcceptsTableScopedSelectGrant(t *testing.T) {
 	}
 }
 
-// Retention shorter than a day is a real risk but not a reason to refuse to
-// start, so it must be advisory: reported, counted, and not fatal.
+// Retention shorter than a day is a real risk but not a reason to refuse to start, so it must
+// be advisory: reported, counted, and not fatal.
 func TestShortBinlogRetentionIsAdvisoryNotFatal(t *testing.T) {
 	vars := goodVars()
 	vars["binlog_expire_logs_seconds"] = "3600"
@@ -274,9 +272,7 @@ func TestReportGetExposesObservedValues(t *testing.T) {
 	}
 }
 
-// PARTIAL_JSON turns an UPDATE to a JSON column into a diff. Nothing downstream can
-// apply one, and nothing would report that a document had been replaced by a
-// description of a change, so this has to be caught before a stream starts.
+// PARTIAL_JSON turns an UPDATE to a JSON column into a diff.
 func TestEvaluateRejectsPartialJSONLogging(t *testing.T) {
 	vars := goodVars()
 	vars["binlog_row_value_options"] = "PARTIAL_JSON"
@@ -293,8 +289,8 @@ func TestEvaluateRejectsPartialJSONLogging(t *testing.T) {
 	}
 }
 
-// The default is empty, and an empty value has to read as such rather than as a blank
-// in the output.
+// The default is empty, and an empty value has to read as such rather than as a blank in the
+// output.
 func TestEvaluateReportsAnEmptyRowValueOptionsReadably(t *testing.T) {
 	c := find(t, Evaluate(goodVars(), goodGrants()), "binlog_row_value_options")
 	if !c.OK {

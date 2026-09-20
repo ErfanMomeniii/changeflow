@@ -89,8 +89,7 @@ func New(opts Options) (*Sink, error) {
 	}, nil
 }
 
-// Write applies a batch, retrying the documents that failed for a reason a retry
-// could fix.
+// Write applies a batch, retrying the documents that failed for a reason a retry could fix.
 func (s *Sink) Write(ctx context.Context, docs []cdc.Doc) (sink.Result, error) {
 	var result sink.Result
 	if len(docs) == 0 {
