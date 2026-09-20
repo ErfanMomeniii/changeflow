@@ -1,0 +1,153 @@
+# A production deployment of one changeflow process.
+#
+# Three things here are load-bearing rather than taste:
+#   - replicas is 1 and the strategy is Recreate. A stream may only run once: the second
+#     process is refused by the stream lock, and a rolling update would overlap them.
+#   - metrics_addr binds 0.0.0.0, not the 127.0.0.1 default, or the probes cannot reach it.
+#   - the dead letter directory is a volume. A refused document is recorded there before the
+#     position advances, so losing it on restart loses the only record of what was dropped.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: changeflow-credentials
+type: Opaque
+stringData:
+  SOURCE_PASSWORD: replace-me
+  CHECKPOINT_PASSWORD: replace-me
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: changeflow-config
+data:
+  changeflow.yaml: |
+    source:
+      dsn: "cdc:${SOURCE_PASSWORD}@tcp(mysql.prod.svc:3306)/shop"
+      # Unique across every replica of this master, including other changeflow processes.
+      server_id: 1001
+      tls: preferred
+
+    checkpoint:
+      dsn: "changeflow:${CHECKPOINT_PASSWORD}@tcp(mysql.prod.svc:3306)/changeflow_meta"
+      table: changeflow_checkpoints
+
+    runtime:
+      metrics_addr: "0.0.0.0:9187"
+      shutdown_grace: 30s
+
+    streams:
+      orders_to_clickhouse:
+        table: shop.orders
+        snapshot:
+          enabled: true
+          chunk_size: 5000
+          # A ceiling on what a backfill costs the source.
+          max_rate_rows_per_sec: 20000
+        batch:
+          max_rows: 1000
+          max_bytes: 5MiB
+          flush_interval: 500ms
+        sink:
+          type: clickhouse
+          dsn: "http://changeflow:${CHECKPOINT_PASSWORD}@clickhouse.prod.svc:8123/?database=analytics"
+          table: analytics.orders
+        mapping:
+          key: [id]
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: changeflow-dlq
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: changeflow
+  labels:
+    app: changeflow
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: changeflow
+  template:
+    metadata:
+      labels:
+        app: changeflow
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9187"
+        prometheus.io/path: /metrics
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 65532
+      containers:
+        - name: changeflow
+          image: ghcr.io/erfanmomeniii/changeflow:latest
+          args: ["run", "-c", "/etc/changeflow/changeflow.yaml", "--dlq-dir", "/var/lib/changeflow/dlq"]
+          ports:
+            - name: metrics
+              containerPort: 9187
+          env:
+            - name: SOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: changeflow-credentials
+                  key: SOURCE_PASSWORD
+            - name: CHECKPOINT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: changeflow-credentials
+                  key: CHECKPOINT_PASSWORD
+            # Kept under the container limit, so the runtime sheds garbage rather than
+            # being killed. `validate` refuses a configuration whose buffers exceed it.
+            - name: GOMEMLIMIT
+              value: "768MiB"
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          # Readiness fails while a stream is stopped or has fallen far behind; liveness does
+          # not, because restarting a lagging stream only pushes it further behind.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/changeflow
+              readOnly: true
+            - name: dlq
+              mountPath: /var/lib/changeflow/dlq
+      # Long enough for the final batch to be written and its position recorded.
+      terminationGracePeriodSeconds: 60
+      volumes:
+        - name: config
+          configMap:
+            name: changeflow-config
+        - name: dlq
+          persistentVolumeClaim:
+            claimName: changeflow-dlq

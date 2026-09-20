@@ -1,0 +1,13 @@
+.git
+.github
+.idea
+.ai
+.qodo
+bin
+dlq
+scripts
+sdk
+deploy/dev
+test/fixtures
+*.md
+*.log

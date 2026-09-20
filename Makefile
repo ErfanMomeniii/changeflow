@@ -5,13 +5,23 @@ DEV_SHOP_DSN ?= cdc:cdc@tcp(127.0.0.1:13306)/shop?parseTime=true
 DEV_WRITE_DSN ?= root:root@tcp(127.0.0.1:13306)/shop?parseTime=true
 COMPOSE := docker compose -f deploy/dev/docker-compose.yml
 
-.PHONY: help build test test-integration test-e2e bench budgets vet check check-all dev-up dev-sinks dev-down dev-logs dev-mysql dev-es dev-ch preflight tail
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null)
+DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+IMAGE ?= changeflow
+LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
+
+.PHONY: help build docker test test-integration test-e2e bench budgets vet check check-all demo dev-up dev-sinks dev-down dev-logs dev-mysql dev-es dev-ch preflight tail
 
 help:
 	@grep -E '^[a-z-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
-build: ## Build the binary
-	go build -o bin/changeflow ./cmd/changeflow
+build: ## Build the binary, stamped with the version it was built from
+	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/changeflow ./cmd/changeflow
+
+docker: ## Build the container image
+	docker build --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) --build-arg DATE=$(DATE) \
+		-t $(IMAGE):$(VERSION) -t $(IMAGE):latest .
 
 test: ## Run unit tests
 	go test ./... -count=1
@@ -41,6 +51,9 @@ vet: ## Static checks
 check: vet test budgets ## Fast checks, no containers needed
 
 check-all: vet test-integration ## Everything, including tests against live services
+
+demo: ## Prove replication and restart persistence end to end against MySQL and ClickHouse
+	./scripts/demo.sh
 
 dev-up: ## Start a CDC-configured MySQL on port 13306
 	$(COMPOSE) up -d --wait

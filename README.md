@@ -299,10 +299,37 @@ changeflow run -c changeflow.yaml --stream orders_to_clickhouse
 the stream cannot resume and says so; recover with `resnapshot`. Otherwise it catches up on
 its own, and `--stream` lets it do that without its siblings competing for the destination.
 
+## Deploying
+
+```
+make docker                                  # changeflow:<version>, a distroless image that runs as nonroot
+kubectl apply -f deploy/kubernetes/changeflow.yaml
+./bin/changeflow --version                   # what a running binary is, stamped at build time
+```
+
+Three things decide whether a deployment behaves, and the manifest in `deploy/kubernetes`
+sets all three:
+
+- **One process per stream.** A stream holds a lock for its lifetime, so a second replica is
+  refused rather than double-writing. Keep `replicas: 1` and a `Recreate` strategy, since a
+  rolling update would overlap the old process and the new one.
+- **Bind the metrics address.** It defaults to `127.0.0.1:9187`, which nothing outside the
+  container can reach: set `runtime.metrics_addr` to `0.0.0.0:9187` or the probes fail.
+  `/readyz` fails for a stopped or badly lagging stream, `/healthz` does not — restarting a
+  lagging stream only pushes it further behind.
+- **Keep the dead letter directory.** A refused document is recorded there before the
+  position moves past it, so a volume that survives a restart is the only record of what a
+  destination would not accept.
+
+Give the process a `GOMEMLIMIT` under the container's memory limit. `changeflow validate`
+refuses a configuration whose buffers and in-flight batches exceed it, which turns a
+scheduled OOM kill into a startup error.
+
 ## Development
 
 ```
 make check              # format, vet, and unit tests with the race detector
+make demo               # end-to-end proof: snapshot, live CDC, restart persistence
 make dev-up             # MySQL
 make dev-sinks          # Elasticsearch and ClickHouse (needs ~3 GB of free disk)
 make test-integration   # tests that need a real MySQL

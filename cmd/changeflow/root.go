@@ -5,9 +5,19 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime/debug"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
+)
+
+// Set by the linker at release time; a build without them falls back to what the Go
+// toolchain stamps in, so a binary can always say what it is.
+var (
+	version = "dev"
+	commit  = ""
+	date    = ""
 )
 
 func main() {
@@ -37,6 +47,7 @@ func newRootCmd(started *bool) *cobra.Command {
 
 DSN format:
   user:password@tcp(host:3306)/`,
+		Version:       buildVersion(),
 		SilenceErrors: true,
 		PersistentPreRun: func(cmd *cobra.Command, _ []string) {
 			*started = true
@@ -54,6 +65,34 @@ DSN format:
 		newTailCmd(),
 	)
 	return root
+}
+
+// buildVersion reports what this binary is, for a deployment nobody can otherwise identify.
+func buildVersion() string {
+	revision, built := commit, date
+	if revision == "" {
+		if info, ok := debug.ReadBuildInfo(); ok {
+			for _, setting := range info.Settings {
+				switch setting.Key {
+				case "vcs.revision":
+					revision = setting.Value
+				case "vcs.time":
+					if built == "" {
+						built = setting.Value
+					}
+				}
+			}
+		}
+	}
+	out := version
+	// An untagged build names itself by revision already, so repeating it reads as noise.
+	if revision != "" && !strings.Contains(out, revision) {
+		out += " (" + revision + ")"
+	}
+	if built != "" {
+		out += " built " + built
+	}
+	return out
 }
 
 func configFlag(cmd *cobra.Command, path *string) {
