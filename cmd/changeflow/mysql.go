@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"strconv"
 	"strings"
+
+	"github.com/spf13/cobra"
 
 	"github.com/ErfanMomeniii/changeflow/internal/preflight"
 )
@@ -59,4 +62,21 @@ func splitHostPort(addr string) (string, uint16, error) {
 		return "", 0, fmt.Errorf("port 0 in %q", addr)
 	}
 	return host, uint16(port), nil
+}
+
+type sourceFlags struct {
+	dsn      string
+	serverID uint32
+}
+
+func (s *sourceFlags) bind(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&s.dsn, "dsn", os.Getenv("CHANGEFLOW_DSN"), "MySQL DSN, e.g. user:pass@tcp(host:3306)/ (env: CHANGEFLOW_DSN)")
+	cmd.Flags().Uint32Var(&s.serverID, "server-id", 1001, "replica server_id; must be unique among replicas of this master")
+}
+
+func (s *sourceFlags) require() error {
+	if s.dsn == "" {
+		return errors.New("--dsn is required (or set CHANGEFLOW_DSN)")
+	}
+	return nil
 }
