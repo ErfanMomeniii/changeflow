@@ -13,6 +13,19 @@ MySQL ──binlog──> changeflow ──batches──> Elasticsearch
                        └── position ──> checkpoint table (MySQL)
 ```
 
+## Contents
+
+- [What it guarantees](#what-it-guarantees)
+- [Install](#install)
+- [Quick start](#quick-start)
+- [Requirements](#requirements)
+- [Configuration](#configuration)
+- [Running](#running)
+- [Operating](#operating)
+- [Deploying](#deploying)
+- [Development](#development)
+- [PHP companion](#php-companion)
+
 ## What it guarantees
 
 - **Nothing is lost.** A position advances only after the destination has acknowledged the
@@ -28,6 +41,48 @@ MySQL ──binlog──> changeflow ──batches──> Elasticsearch
 
 Each of those has an end-to-end test that kills or restarts the process and checks the
 outcome against a real MySQL and a real destination.
+
+## Install
+
+From source (Go 1.26+):
+
+```
+git clone https://github.com/erfanmomeniii/changeflow
+cd changeflow
+make build          # writes ./bin/changeflow
+```
+
+Or as a container image, which is how it usually runs in production:
+
+```
+make docker         # changeflow:<version>, a distroless image that runs as nonroot
+```
+
+Every binary identifies itself: `changeflow --version` reports the version, commit, and
+build time it was stamped with at build time.
+
+## Quick start
+
+Against a throwaway MySQL that `make dev-up` configures for CDC and seeds with data:
+
+```
+make dev-up            # a CDC-configured MySQL on port 13306, seeded
+make dev-sinks         # Elasticsearch on 19200 and ClickHouse on 18123
+make build
+
+./bin/changeflow validate -c deploy/dev/changeflow.yaml
+./bin/changeflow generate-schema -c deploy/dev/changeflow.yaml --stream orders_to_es > /tmp/orders-v1.json
+curl -XPUT localhost:19200/orders-v1 -H 'Content-Type: application/json' -d @/tmp/orders-v1.json
+./bin/changeflow run -c deploy/dev/changeflow.yaml --stream orders_to_es
+```
+
+The seeded table already has rows, which no binlog event mentions; they arrive from the
+initial scan. Then change one and watch it follow:
+
+```
+mysql -h127.0.0.1 -P13306 -ucdc -pcdc shop -e "UPDATE orders SET status='shipped' WHERE id=1"
+curl -s localhost:19200/orders-v1/_doc/1 | jq .
+```
 
 ## Requirements
 
@@ -61,27 +116,6 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON `changeflow_meta`.* TO 'cdc'@'%';
 
 The checkpoint table is created on first run if the user may issue DDL. In production, apply
 that DDL with a migration tool and leave the running service only the rights above.
-
-## Quick start
-
-```
-make dev-up            # a CDC-configured MySQL on port 13306, seeded
-make dev-sinks         # Elasticsearch on 19200 and ClickHouse on 18123
-make build
-
-./bin/changeflow validate -c deploy/dev/changeflow.yaml
-./bin/changeflow generate-schema -c deploy/dev/changeflow.yaml --stream orders_to_es > /tmp/orders-v1.json
-curl -XPUT localhost:19200/orders-v1 -H 'Content-Type: application/json' -d @/tmp/orders-v1.json
-./bin/changeflow run -c deploy/dev/changeflow.yaml --stream orders_to_es
-```
-
-The seeded table already has rows, which no binlog event mentions; they arrive from the
-initial scan. Then change one and watch it follow:
-
-```
-mysql -h127.0.0.1 -P13306 -ucdc -pcdc shop -e "UPDATE orders SET status='shipped' WHERE id=1"
-curl -s localhost:19200/orders-v1/_doc/1 | jq .
-```
 
 ## Configuration
 
