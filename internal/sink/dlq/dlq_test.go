@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ErfanMomeniii/changeflow/internal/cdc"
-	"github.com/ErfanMomeniii/changeflow/internal/sink"
+	"github.com/erfanmomeniii/changeflow/internal/cdc"
+	"github.com/erfanmomeniii/changeflow/internal/sink"
 )
 
 func newTestWriter(t *testing.T, tune func(*Options)) (*Writer, string) {

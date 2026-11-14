@@ -6,7 +6,7 @@ import (
 	"io"
 	"strconv"
 
-	"github.com/ErfanMomeniii/changeflow/internal/source"
+	"github.com/erfanmomeniii/changeflow/internal/source"
 )
 
 // CheckServer connects to the server, runs every check, prints the report to w, and returns it.

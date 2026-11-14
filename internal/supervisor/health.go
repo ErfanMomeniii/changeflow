@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ErfanMomeniii/changeflow/internal/cdc"
-	"github.com/ErfanMomeniii/changeflow/internal/telemetry"
+	"github.com/erfanmomeniii/changeflow/internal/cdc"
+	"github.com/erfanmomeniii/changeflow/internal/telemetry"
 )
 
 type streamObserver struct {

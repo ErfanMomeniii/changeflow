@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ErfanMomeniii/changeflow/internal/cdc"
-	"github.com/ErfanMomeniii/changeflow/internal/schema"
+	"github.com/erfanmomeniii/changeflow/internal/cdc"
+	"github.com/erfanmomeniii/changeflow/internal/schema"
 )
 
 func meta(table string) *schema.TableMeta {

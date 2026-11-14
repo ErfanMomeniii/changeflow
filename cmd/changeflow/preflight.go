@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/ErfanMomeniii/changeflow/internal/preflight"
+	"github.com/erfanmomeniii/changeflow/internal/preflight"
 )
 
 func newPreflightCmd() *cobra.Command {

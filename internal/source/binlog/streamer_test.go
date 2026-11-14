@@ -14,8 +14,8 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/shopspring/decimal"
 
-	"github.com/ErfanMomeniii/changeflow/internal/cdc"
-	"github.com/ErfanMomeniii/changeflow/internal/schema"
+	"github.com/erfanmomeniii/changeflow/internal/cdc"
+	"github.com/erfanmomeniii/changeflow/internal/schema"
 )
 
 type counterSeq struct{ n uint64 }

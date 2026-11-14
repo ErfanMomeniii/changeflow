@@ -1,4 +1,4 @@
-module github.com/ErfanMomeniii/changeflow
+module github.com/erfanmomeniii/changeflow
 
 go 1.26.2
 

@@ -15,8 +15,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/ErfanMomeniii/changeflow/internal/cdc"
-	"github.com/ErfanMomeniii/changeflow/internal/sink"
+	"github.com/erfanmomeniii/changeflow/internal/cdc"
+	"github.com/erfanmomeniii/changeflow/internal/sink"
 )
 
 // Options configures a sink.

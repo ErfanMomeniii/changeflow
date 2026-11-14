@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ErfanMomeniii/changeflow/internal/sink"
+	"github.com/erfanmomeniii/changeflow/internal/sink"
 )
 
 // Record is one refused document.

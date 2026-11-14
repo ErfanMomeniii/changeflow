@@ -14,16 +14,16 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 
-	"github.com/ErfanMomeniii/changeflow/internal/cdc"
-	"github.com/ErfanMomeniii/changeflow/internal/checkpoint"
-	"github.com/ErfanMomeniii/changeflow/internal/config"
-	"github.com/ErfanMomeniii/changeflow/internal/pipeline"
-	"github.com/ErfanMomeniii/changeflow/internal/preflight"
-	"github.com/ErfanMomeniii/changeflow/internal/schema"
-	"github.com/ErfanMomeniii/changeflow/internal/sink"
-	"github.com/ErfanMomeniii/changeflow/internal/sink/dlq"
-	"github.com/ErfanMomeniii/changeflow/internal/source"
-	"github.com/ErfanMomeniii/changeflow/internal/telemetry"
+	"github.com/erfanmomeniii/changeflow/internal/cdc"
+	"github.com/erfanmomeniii/changeflow/internal/checkpoint"
+	"github.com/erfanmomeniii/changeflow/internal/config"
+	"github.com/erfanmomeniii/changeflow/internal/pipeline"
+	"github.com/erfanmomeniii/changeflow/internal/preflight"
+	"github.com/erfanmomeniii/changeflow/internal/schema"
+	"github.com/erfanmomeniii/changeflow/internal/sink"
+	"github.com/erfanmomeniii/changeflow/internal/sink/dlq"
+	"github.com/erfanmomeniii/changeflow/internal/source"
+	"github.com/erfanmomeniii/changeflow/internal/telemetry"
 )
 
 const seqBlockSize = 10_000

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ErfanMomeniii/changeflow/internal/cdc"
+	"github.com/erfanmomeniii/changeflow/internal/cdc"
 )
 
 type fakeClock struct{ at time.Time }

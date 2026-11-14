@@ -15,8 +15,8 @@ import (
 
 	"github.com/shopspring/decimal"
 
-	"github.com/ErfanMomeniii/changeflow/internal/cdc"
-	"github.com/ErfanMomeniii/changeflow/internal/schema"
+	"github.com/erfanmomeniii/changeflow/internal/cdc"
+	"github.com/erfanmomeniii/changeflow/internal/schema"
 )
 
 // Options configures a scan.

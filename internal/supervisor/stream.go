@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/ErfanMomeniii/changeflow/internal/checkpoint"
-	"github.com/ErfanMomeniii/changeflow/internal/source"
-	"github.com/ErfanMomeniii/changeflow/internal/source/binlog"
+	"github.com/erfanmomeniii/changeflow/internal/checkpoint"
+	"github.com/erfanmomeniii/changeflow/internal/source"
+	"github.com/erfanmomeniii/changeflow/internal/source/binlog"
 )
 
 func (s *Supervisor) stream(

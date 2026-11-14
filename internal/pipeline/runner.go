@@ -7,9 +7,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/ErfanMomeniii/changeflow/internal/cdc"
-	"github.com/ErfanMomeniii/changeflow/internal/checkpoint"
-	"github.com/ErfanMomeniii/changeflow/internal/sink"
+	"github.com/erfanmomeniii/changeflow/internal/cdc"
+	"github.com/erfanmomeniii/changeflow/internal/checkpoint"
+	"github.com/erfanmomeniii/changeflow/internal/sink"
 )
 
 // DeadLetterQueue records documents a destination refused permanently.

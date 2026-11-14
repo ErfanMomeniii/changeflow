@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/ErfanMomeniii/changeflow/internal/cdc"
+	"github.com/erfanmomeniii/changeflow/internal/cdc"
 )
 
 func benchDocs(n int) []cdc.Doc {

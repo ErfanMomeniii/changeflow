@@ -3,7 +3,7 @@ package cdc
 import (
 	"time"
 
-	"github.com/ErfanMomeniii/changeflow/internal/schema"
+	"github.com/erfanmomeniii/changeflow/internal/schema"
 )
 
 // Operation is what happened to a row.

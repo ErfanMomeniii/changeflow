@@ -8,11 +8,11 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/ErfanMomeniii/changeflow/internal/checkpoint"
-	"github.com/ErfanMomeniii/changeflow/internal/config"
-	"github.com/ErfanMomeniii/changeflow/internal/schema"
-	"github.com/ErfanMomeniii/changeflow/internal/sink/dlq"
-	"github.com/ErfanMomeniii/changeflow/internal/source"
+	"github.com/erfanmomeniii/changeflow/internal/checkpoint"
+	"github.com/erfanmomeniii/changeflow/internal/config"
+	"github.com/erfanmomeniii/changeflow/internal/schema"
+	"github.com/erfanmomeniii/changeflow/internal/sink/dlq"
+	"github.com/erfanmomeniii/changeflow/internal/source"
 )
 
 // Status prints each stream's position, lag, snapshot state, and refused documents.

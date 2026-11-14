@@ -12,7 +12,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
-	"github.com/ErfanMomeniii/changeflow/internal/cdc"
+	"github.com/erfanmomeniii/changeflow/internal/cdc"
 )
 
 func newTestMetrics(t *testing.T) (*Metrics, *prometheus.Registry) {

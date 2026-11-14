@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/ErfanMomeniii/changeflow/internal/tail"
+	"github.com/erfanmomeniii/changeflow/internal/tail"
 )
 
 func newTailCmd() *cobra.Command {

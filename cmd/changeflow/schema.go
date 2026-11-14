@@ -6,8 +6,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/ErfanMomeniii/changeflow/internal/config"
-	"github.com/ErfanMomeniii/changeflow/internal/supervisor"
+	"github.com/erfanmomeniii/changeflow/internal/config"
+	"github.com/erfanmomeniii/changeflow/internal/supervisor"
 )
 
 func newGenerateSchemaCmd() *cobra.Command {

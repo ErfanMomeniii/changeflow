@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/ErfanMomeniii/changeflow/internal/cdc"
+	"github.com/erfanmomeniii/changeflow/internal/cdc"
 )
 
 // Sink applies batches of documents to a destination.

@@ -6,15 +6,15 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ErfanMomeniii/changeflow/internal/cdc"
-	"github.com/ErfanMomeniii/changeflow/internal/checkpoint"
-	"github.com/ErfanMomeniii/changeflow/internal/config"
-	"github.com/ErfanMomeniii/changeflow/internal/pipeline"
-	"github.com/ErfanMomeniii/changeflow/internal/schema"
-	"github.com/ErfanMomeniii/changeflow/internal/sink"
-	"github.com/ErfanMomeniii/changeflow/internal/sink/clickhouse"
-	"github.com/ErfanMomeniii/changeflow/internal/sink/dlq"
-	"github.com/ErfanMomeniii/changeflow/internal/sink/elasticsearch"
+	"github.com/erfanmomeniii/changeflow/internal/cdc"
+	"github.com/erfanmomeniii/changeflow/internal/checkpoint"
+	"github.com/erfanmomeniii/changeflow/internal/config"
+	"github.com/erfanmomeniii/changeflow/internal/pipeline"
+	"github.com/erfanmomeniii/changeflow/internal/schema"
+	"github.com/erfanmomeniii/changeflow/internal/sink"
+	"github.com/erfanmomeniii/changeflow/internal/sink/clickhouse"
+	"github.com/erfanmomeniii/changeflow/internal/sink/dlq"
+	"github.com/erfanmomeniii/changeflow/internal/sink/elasticsearch"
 )
 
 func (s *Supervisor) prepare(ctx context.Context, sess *session) ([]*streamRuntime, error) {

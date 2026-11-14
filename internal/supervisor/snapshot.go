@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ErfanMomeniii/changeflow/internal/checkpoint"
-	"github.com/ErfanMomeniii/changeflow/internal/sink/elasticsearch"
-	"github.com/ErfanMomeniii/changeflow/internal/source"
-	"github.com/ErfanMomeniii/changeflow/internal/source/snapshot"
+	"github.com/erfanmomeniii/changeflow/internal/checkpoint"
+	"github.com/erfanmomeniii/changeflow/internal/sink/elasticsearch"
+	"github.com/erfanmomeniii/changeflow/internal/source"
+	"github.com/erfanmomeniii/changeflow/internal/source/snapshot"
 )
 
 func (s *Supervisor) backfill(ctx context.Context, sess *session, runtimes []*streamRuntime) (map[string]string, error) {

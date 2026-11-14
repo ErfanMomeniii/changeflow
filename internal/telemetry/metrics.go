@@ -5,7 +5,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/ErfanMomeniii/changeflow/internal/cdc"
+	"github.com/erfanmomeniii/changeflow/internal/cdc"
 )
 
 // Metrics records one stream's activity.

@@ -8,8 +8,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/ErfanMomeniii/changeflow/internal/preflight"
-	"github.com/ErfanMomeniii/changeflow/internal/source"
+	"github.com/erfanmomeniii/changeflow/internal/preflight"
+	"github.com/erfanmomeniii/changeflow/internal/source"
 )
 
 // Options controls one streaming run, described by a DSN rather than split parts.

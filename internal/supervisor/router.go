@@ -8,7 +8,7 @@ import (
 
 	"github.com/go-mysql-org/go-mysql/mysql"
 
-	"github.com/ErfanMomeniii/changeflow/internal/cdc"
+	"github.com/erfanmomeniii/changeflow/internal/cdc"
 )
 
 // Router delivers each change to the streams configured for its table.
