@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"os"
-	"runtime/debug"
 
 	"github.com/spf13/cobra"
 
@@ -32,9 +31,6 @@ func newRunCmd() *cobra.Command {
 func replicate(ctx context.Context, path, stream, dlqDir string) error {
 	cfg, err := config.Load(path)
 	if err != nil {
-		return err
-	}
-	if err := cfg.CheckMemoryLimit(debug.SetMemoryLimit(-1)); err != nil {
 		return err
 	}
 	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))

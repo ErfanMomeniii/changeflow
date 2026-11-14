@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"github.com/ErfanMomeniii/changeflow/internal/schema"
 	"github.com/ErfanMomeniii/changeflow/internal/sink"
 	"github.com/ErfanMomeniii/changeflow/internal/sink/dlq"
+	"github.com/ErfanMomeniii/changeflow/internal/source"
 	"github.com/ErfanMomeniii/changeflow/internal/telemetry"
 )
 
@@ -88,6 +90,9 @@ func New(cfg *config.Config, streamName, dlqDir string, log *slog.Logger) (*Supe
 	}
 	if dlqDir == "" {
 		return nil, errors.New("supervisor: a dead letter directory is required, since a refused document must be recorded before its position advances")
+	}
+	if err := cfg.CheckMemoryLimit(debug.SetMemoryLimit(-1)); err != nil {
+		return nil, err
 	}
 	streams, err := selectStreams(cfg, streamName)
 	if err != nil {
@@ -172,12 +177,12 @@ func (s *Supervisor) connect(ctx context.Context) (sess *session, err error) {
 			sess = nil
 		}
 	}()
-	sess.sourceDB, err = openMySQL(ctx, s.cfg.Source.DSN)
+	sess.sourceDB, err = source.Open(ctx, s.cfg.Source.DSN)
 	if err != nil {
 		return nil, fmt.Errorf("supervisor: connect to source: %w", err)
 	}
 	sess.schemas = schema.NewStore(schema.DBLoader{DB: sess.sourceDB})
-	sess.metaDB, err = openMySQL(ctx, s.cfg.Checkpoint.DSN)
+	sess.metaDB, err = source.Open(ctx, s.cfg.Checkpoint.DSN)
 	if err != nil {
 		return nil, fmt.Errorf("supervisor: connect to checkpoint store: %w", err)
 	}

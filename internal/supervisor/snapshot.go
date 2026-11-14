@@ -9,6 +9,7 @@ import (
 
 	"github.com/ErfanMomeniii/changeflow/internal/checkpoint"
 	"github.com/ErfanMomeniii/changeflow/internal/sink/elasticsearch"
+	"github.com/ErfanMomeniii/changeflow/internal/source"
 	"github.com/ErfanMomeniii/changeflow/internal/source/snapshot"
 )
 
@@ -51,7 +52,7 @@ func (s *Supervisor) startWithoutSnapshot(
 	if cp.GTIDSet != "" {
 		return cp.GTIDSet, nil
 	}
-	position, err := currentPosition(ctx, sess.sourceDB)
+	position, err := source.Position(ctx, sess.sourceDB)
 	if err != nil {
 		return "", err
 	}
@@ -75,7 +76,7 @@ func (s *Supervisor) markScanStarted(
 			"stream", rt.cfg.Name, "rows_done", cp.SnapshotRowsDone, "estimated_rows", cp.SnapshotRowsTotal)
 		return cp, nil
 	}
-	position, err := currentPosition(ctx, sess.sourceDB)
+	position, err := source.Position(ctx, sess.sourceDB)
 	if err != nil {
 		return cp, err
 	}
@@ -104,7 +105,7 @@ func (s *Supervisor) runScan(
 ) (string, error) {
 	scanDB := sess.sourceDB
 	if s.cfg.Source.SnapshotDSN != "" {
-		replica, err := openMySQL(ctx, s.cfg.Source.SnapshotDSN)
+		replica, err := source.Open(ctx, s.cfg.Source.SnapshotDSN)
 		if err != nil {
 			return "", fmt.Errorf("supervisor: connect for the table scan: %w", err)
 		}

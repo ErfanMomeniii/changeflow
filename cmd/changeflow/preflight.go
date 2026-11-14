@@ -1,8 +1,8 @@
 package main
 
 import (
-	"context"
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -10,35 +10,25 @@ import (
 )
 
 func newPreflightCmd() *cobra.Command {
-	var sf sourceFlags
+	var dsn string
 	cmd := &cobra.Command{
 		Use:   "preflight",
 		Short: "Check whether a MySQL server is configured for CDC",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := sf.require(); err != nil {
+			if dsn == "" {
+				return fmt.Errorf("--dsn is required (or set CHANGEFLOW_DSN)")
+			}
+			report, err := preflight.CheckServer(cmd.Context(), dsn, os.Stdout)
+			if err != nil {
 				return err
 			}
-			return checkServer(cmd.Context(), sf.dsn)
+			if !report.OK() {
+				return fmt.Errorf("%d required check(s) failed", len(report.Failures()))
+			}
+			return nil
 		},
 	}
-	sf.bind(cmd)
+	cmd.Flags().StringVar(&dsn, "dsn", os.Getenv("CHANGEFLOW_DSN"), "MySQL DSN, e.g. user:pass@tcp(host:3306)/ (env: CHANGEFLOW_DSN)")
 	return cmd
-}
-
-func checkServer(ctx context.Context, dsn string) error {
-	db, err := open(ctx, dsn)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-	report, err := preflight.Run(ctx, preflight.DBReader{DB: db})
-	if err != nil {
-		return err
-	}
-	printReport(report)
-	if !report.OK() {
-		return fmt.Errorf("%d required check(s) failed", len(report.Failures()))
-	}
-	return nil
 }

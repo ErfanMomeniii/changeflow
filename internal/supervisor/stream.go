@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/ErfanMomeniii/changeflow/internal/checkpoint"
+	"github.com/ErfanMomeniii/changeflow/internal/source"
 	"github.com/ErfanMomeniii/changeflow/internal/source/binlog"
 )
 
@@ -49,15 +50,15 @@ func (s *Supervisor) newStreamer(
 	startGTID string,
 	seq binlog.Sequencer,
 ) (*binlog.Streamer, error) {
-	host, port, err := addressOf(s.cfg.Source.DSN)
+	host, port, err := source.Address(s.cfg.Source.DSN)
 	if err != nil {
 		return nil, err
 	}
 	return binlog.New(binlog.Options{
 		Host:            host,
 		Port:            port,
-		User:            usernameOf(s.cfg.Source.DSN),
-		Password:        passwordOf(s.cfg.Source.DSN),
+		User:            source.Username(s.cfg.Source.DSN),
+		Password:        source.Password(s.cfg.Source.DSN),
 		ServerID:        s.cfg.Source.ServerID,
 		StartGTID:       startGTID,
 		Tables:          router.Tables(),

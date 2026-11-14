@@ -3,14 +3,8 @@ package supervisor
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
-	"net"
-	"strconv"
-	"strings"
 	"time"
-
-	driver "github.com/go-sql-driver/mysql"
 
 	"github.com/ErfanMomeniii/changeflow/internal/cdc"
 	"github.com/ErfanMomeniii/changeflow/internal/checkpoint"
@@ -169,18 +163,6 @@ func dialectFor(sinkType string) (pipeline.Dialect, error) {
 	}
 }
 
-func currentPosition(ctx context.Context, db *sql.DB) (string, error) {
-	var gtid string
-	if err := db.QueryRowContext(ctx, "SELECT @@GLOBAL.gtid_executed").Scan(&gtid); err != nil {
-		return "", fmt.Errorf("supervisor: read source position: %w", err)
-	}
-	gtid = strings.ReplaceAll(gtid, "\n", "")
-	if strings.TrimSpace(gtid) == "" {
-		return "", errors.New("supervisor: the source has logged no transactions, so there is no position to start from")
-	}
-	return gtid, nil
-}
-
 func estimateRows(ctx context.Context, db *sql.DB, meta *schema.TableMeta) uint64 {
 	var rows sql.NullInt64
 	err := db.QueryRowContext(ctx,
@@ -190,51 +172,4 @@ func estimateRows(ctx context.Context, db *sql.DB, meta *schema.TableMeta) uint6
 		return 0
 	}
 	return uint64(rows.Int64)
-}
-
-func openMySQL(ctx context.Context, dsn string) (*sql.DB, error) {
-	db, err := sql.Open("mysql", dsn)
-	if err != nil {
-		return nil, err
-	}
-	db.SetMaxOpenConns(16)
-	db.SetConnMaxLifetime(time.Hour)
-	if err := db.PingContext(ctx); err != nil {
-		db.Close()
-		return nil, err
-	}
-	return db, nil
-}
-
-func addressOf(dsn string) (string, uint16, error) {
-	cfg, err := driver.ParseDSN(dsn)
-	if err != nil {
-		return "", 0, fmt.Errorf("supervisor: parse dsn: %w", err)
-	}
-	if cfg.Net != "tcp" {
-		return "", 0, fmt.Errorf("supervisor: replication needs a tcp dsn, got %q", cfg.Net)
-	}
-	host, portStr, err := net.SplitHostPort(cfg.Addr)
-	if err != nil {
-		return strings.Trim(cfg.Addr, "[]"), 3306, nil
-	}
-	port, err := strconv.ParseUint(portStr, 10, 16)
-	if err != nil {
-		return "", 0, fmt.Errorf("supervisor: parse port in %q: %w", cfg.Addr, err)
-	}
-	return host, uint16(port), nil
-}
-
-func usernameOf(dsn string) string {
-	if cfg, err := driver.ParseDSN(dsn); err == nil {
-		return cfg.User
-	}
-	return ""
-}
-
-func passwordOf(dsn string) string {
-	if cfg, err := driver.ParseDSN(dsn); err == nil {
-		return cfg.Passwd
-	}
-	return ""
 }
